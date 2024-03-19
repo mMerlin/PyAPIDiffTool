@@ -3,9 +3,11 @@
 
 """attribute profiling iteration prototyping"""
 
-from typing import Iterable, Tuple, Hashable, Union, Dict, get_type_hints
+# import types
+from typing import Iterable, Tuple, Hashable, Union, Dict
 from collections import namedtuple
-import inspect
+from dataclasses import dataclass
+# import inspect
 import logging
 from queue import Queue
 from prototype_import import import_module
@@ -14,6 +16,9 @@ from prototype_support import (
     ObjectContextData,
     ListHandler,
     SentinelTag,
+    Tag,
+    InspectIs as Is,
+    ProfileConstant as PrfC,
     ParameterDetail,
     attribute_name_compare_key,
     get_attribute_info,
@@ -37,21 +42,79 @@ Fields:
 StrOrTag = Union[str, SentinelTag]
 MethodSignatureDetail = Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
 
+@dataclass(frozen=True)
+class Key:
+    """
+    Constants for lookup indexes, to avoid possible typos in strings used to reference them
+    """
+    # pylint:disable=invalid-name,too-many-instance-attributes
+    REPORT_NOT_IMPLEMENTED: str = 'not implemented in port'
+    REPORT_EXTENSION: str = 'extension in port'
+    REPORT_ATTRIBUTE_SKIPPED: str = 'attribute skipped'
+    REPORT_MATCHED_ATTRIBUTE: str = 'matched attribute'
+    POS_IDX: str = 'positional index'
+    KEY_IDX: str = 'keyword index'
+    HDR_SENT_SIG: str = 'signature header sent'
+    HDR_SENT_DIF: str = 'diff header sent'
+    POS_PARAM_TYPE: str = 'positional'
+    KEY_PARAM_TYPE: str = 'keyword'
+    COMPARE_NAME: int = 1
+    INFO_NAME: int = 0
+    INFO_PROFILE: int = 1
+    PROFILE_ELEMENTS: int = 5
+    PROFILE_ANNOTATION: int = 0
+    PROFILE_TYPE: int = 1
+    PROFILE_SOURCE: int = 2
+    SOURCE_ELEMENTS: int = 2
+    SOURCE_FILE: int = 0
+    SOURCE_MODULE: int = 1
+    PROFILE_TAGS: int = 3
+    PROFILE_DETAIL: int = 4
+    DETAIL_ELEMENTS: int = 2
+    DETAIL_KEY: int = 0
+    DETAIL_CONTENT: int = 1
+    SIG_ELEMENTS: int = 3
+    SIG_PARAMETERS: int = 0
+    SIG_RETURN: int = 1
+
+@dataclass(frozen=True)
+class Cfg:
+    """
+    Constants for configuration settings lookup
+    """
+    profile_scope: str = 'scope of attributes'
+    report_exact: str = 'report exact matches'
+    ignore_differences: str = 'ignore specified differences'
+
+@dataclass(frozen=True)
+class Ignore:
+    """
+    Constants for reportable items to suppress
+    """
+    docstring: str = 'docstring'
+    scope_annotation: str = 'scope level annotation'
+
+@dataclass(frozen=True)
+class Match:
+    """
+    Constants for string matching, to avoid possible typos in strings used to compare them
+    """
+    # pylint:disable=invalid-name
+    POSITIONAL: str = 'POSITIONAL'
+
 class ProfilePrototype:
     """
     Create profiles and compare the api for a pair of modules
     """
     HIGH_VALUES = attribute_name_compare_key('_~')
-    """ High-value sentinel, lexicographically greater than any valid attribute name
+    """High-value sentinel, lexicographically greater than any valid attribute name
 
     For added certainty, could use a lexicographically higher utf-8 character. Like '°' (degrees)
 
     With the sort order used, private attribute names sort last
     """
-    REPORT_NOT_IMPLEMENTED = 'not implemented in port'
-    REPORT_EXTENSION = 'extension in port'
-    REPORT_ATTRIBUTE_SKIPPED = 'attribute skipped'
-    REPORT_MATCHED_ATTRIBUTE = 'matched attribute'
+    END_DETAIL = ParameterDetail(name='z', kind='KEYWORD', annotation='str', default=None)
+    """Default value to use instead, to avoid issues testing fields"""
 
     def __init__(self, module_base_name: str, module_port_name: str):
         """
@@ -66,13 +129,14 @@ class ProfilePrototype:
         self._configuration_settings: Dict[str, str] = {}  # Configuration settings
         self.load_configuration()  # Loads configuration settings
         self._reports: Dict[str, logging.Logger] = {}
-        self._reports[self.REPORT_NOT_IMPLEMENTED] = self.create_logger(self.REPORT_NOT_IMPLEMENTED)
-        self._reports[self.REPORT_EXTENSION] = self.create_logger(self.REPORT_EXTENSION)
-        self._reports[self.REPORT_MATCHED_ATTRIBUTE] = \
-            self.create_logger(self.REPORT_MATCHED_ATTRIBUTE)
-        self._reports[self.REPORT_ATTRIBUTE_SKIPPED] = \
-            self.create_logger(self.REPORT_ATTRIBUTE_SKIPPED)
-        # print_logger_hierarchy(self.reports[self.REPORT_NOT_IMPLEMENTED])
+        self._reports[Key.REPORT_NOT_IMPLEMENTED] = self.create_logger(Key.REPORT_NOT_IMPLEMENTED)
+        self._reports[Key.REPORT_EXTENSION] = self.create_logger(Key.REPORT_EXTENSION)
+        self._reports[Key.REPORT_MATCHED_ATTRIBUTE] = \
+            self.create_logger(Key.REPORT_MATCHED_ATTRIBUTE)
+        self._reports[Key.REPORT_ATTRIBUTE_SKIPPED] = \
+            self.create_logger(Key.REPORT_ATTRIBUTE_SKIPPED)
+        self._shared: Dict[str, Union[int, bool]] = {}
+        # print_logger_hierarchy(self.reports[Key.REPORT_NOT_IMPLEMENTED])
         self._expand_queue = Queue()  # A FIFO queue
         self._expand_queue.put(MatchingContext(
             base_path=(module_base_name,),
@@ -130,9 +194,28 @@ class ProfilePrototype:
         - command line arguments
         """
         # attr_scope = getattr(module, 'ATTR_SCOPE', 'all')
-        # self._configuration_settings['attr_scope'] = getattr(module, 'ATTR_SCOPE', 'all')
-        self._configuration_settings['attr_scope'] = ATTR_SCOPE # module level variable
+        # self._configuration_settings[Cfg.profile_scope] = getattr(module, 'ATTR_SCOPE', 'all')
+        # module level variableS
+        self._configuration_settings[Cfg.ignore_differences] = set()
+        self._configuration_settings[Cfg.profile_scope] = ATTR_SCOPE
+        self._configuration_settings[Cfg.report_exact] = REPORT_EXACT_MATCH
+        if IGNORE_DOCSTRING_DIFFERENCES:
+            self._configuration_settings[Cfg.ignore_differences].add(Ignore.docstring)
 
+    def get_configuration(self, key: str) -> Union[bool, str, set]:
+        """
+        Get a configuration setting
+
+        Args:
+            key (str): The name of the configuration setting
+
+        Returns The value for the configuration
+            Union[bool, str, set]
+
+        Raises
+            KeyError if no configuration has been set for the requested key
+        """
+        return self._configuration_settings[key]
 
     def iterate_object_attributes(self, impl_source: str, nest_path: Tuple[Tuple[str], Tuple[str]],
                                    obj: object)-> Iterable[Tuple[str, Tuple]]:
@@ -169,37 +252,38 @@ class ProfilePrototype:
                 thorough review of the API compatibility and completeness.
         """
         object_profile: ObjectContextData = get_object_context_data(nest_path, obj)
-        attr_scope = self._configuration_settings['attr_scope']\
-            if impl_source == 'base' else 'all'
+        attr_scope = self.get_configuration(Cfg.profile_scope) if impl_source == 'base' else 'all'
         attr_names = {
             'all': object_profile.all,
             'published': object_profile.published \
                 if object_profile.published else object_profile.public,
             'public': object_profile.public
         }.get(attr_scope, object_profile.all)
-        base_typehints = get_type_hints(object_profile.element)
-        rpt_target = self._reports[self.REPORT_ATTRIBUTE_SKIPPED]
+        rpt_target = self._reports[Key.REPORT_ATTRIBUTE_SKIPPED]
 
         for name in sorted(attr_names, key=attribute_name_compare_key):
-            result = get_attribute_info(
-                object_profile.element, base_typehints.get(name, inspect.Parameter.empty), name)
-            assert result[0] == name, 'get_attribute_info should return the requested attribute ' \
-                f'name: "{result[0]}" not equal "{name}"'
-            if isinstance(result[1], ApplicationFlagError):
+            result = get_attribute_info(object_profile, name)
+            assert result[Key.INFO_NAME] == name, 'get_attribute_info should return the ' \
+                f'requested attribute name: "{result[Key.INFO_PROFILE]}" not equal "{name}"'
+            if isinstance(result[Key.INFO_PROFILE], ApplicationFlagError):
                 rpt_target.error(f'**** Error accessing {impl_source}."{name}" ' +
                                  f'attribute: {result}')
                 continue
-            key = result[1][3][1]
-            if key is SentinelTag('System:Exclude') or key is SentinelTag('builtin:Exclude'):
+            # result[Key.INFO_PROFILE][Key.PROFILE_SOURCE] # check source file information for
+            # content outside package, then skip
+            key = result[Key.INFO_PROFILE][Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]
+            if key is SentinelTag(Tag.SYS_EXCLUDE) or key is SentinelTag(Tag.BUILTIN_EXCLUDE):
                 rpt_target.info(f'{impl_source} {result}')
                 continue
-            yield (attribute_name_compare_key(result[0]),) + result[1:]
+            yield (attribute_name_compare_key(result[Key.INFO_NAME]),) + result[1:]
 
     def process_expand_queue(self) -> None:
         """
         Compares attributes profiles between base and port implementations based on the
         configuration settings.
         """
+        debug_count = 0
+        match_count, not_impl_count, extension_count = 0, 0, 0
         while not self._expand_queue.empty():
             # Get an entry from the self.expand_queue and process it
             new_context: MatchingContext = self._expand_queue.get()
@@ -212,23 +296,30 @@ class ProfilePrototype:
             compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
             compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
 
-            match_count, not_impl_count, extension_count = 0, 0, 0
             while compare_base < self.HIGH_VALUES or compare_port < self.HIGH_VALUES:
+                # print(min(compare_base, compare_port))
                 if compare_base == compare_port:
+                    print(f'{compare_base} both')  # TRACE
                     match_count += 1
-                    self.handle_matched_attribute(compare_base[1], new_context, profile_base,
-                                                  profile_port)
+                    self.handle_matched_attribute(compare_base[Key.COMPARE_NAME], new_context,
+                                                  profile_base, profile_port)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                     compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
                 elif compare_base < compare_port:
+                    print(f'{compare_base} {new_context.base_path}')  # TRACE
                     not_impl_count += 1
-                    self.handle_unmatched_attribute('base', compare_base[1], profile_base)
+                    self.handle_unmatched_attribute('base', compare_base[Key.COMPARE_NAME],
+                                                    profile_base)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                 else: # compare_base > compare_port
+                    print(f'{compare_port} {new_context.port_path}')  # TRACE
                     extension_count += 1
-                    self.handle_unmatched_attribute('port', compare_port[1], profile_port)
+                    self.handle_unmatched_attribute('port', compare_port[Key.COMPARE_NAME],
+                                                    profile_port)
                     compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
-            break  # DEBUG, verify top level reporting after restructure for queue
+            debug_count += 1
+            if debug_count > 0:
+                break  # DEBUG, abort further processing to see how the reporting is progressing
 
         print(f'\n{match_count} Matched, {not_impl_count} Not Implemented, and {extension_count} '
               'Extension attributes found.')
@@ -248,17 +339,20 @@ class ProfilePrototype:
             profile_port (Tuple): The profile information for the attribute in the ported
                 implementation.
         """
-        validate_profile_data(name, profile_base)
-        validate_profile_data(name, profile_port)
-        rpt_target = self._reports[self.REPORT_MATCHED_ATTRIBUTE]
+
+        validate_profile_data(name, context.base_path, profile_base)
+        validate_profile_data(name, context.port_path, profile_port)
+        rpt_target = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
         # need to watch for the need to expand both attributes
-        diff_hdr_sent = False
-        if profile_base[0] != profile_port[0]:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
-            rpt_target.info(f'  Annotation: Base {profile_base[0]}; Port {profile_port[0]}')
-        if profile_base[1] != profile_port[1]:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
-            rpt_target.info(f'  Type: Base {profile_base[1]}; Port {profile_port[1]}')
+        self._shared[Key.HDR_SENT_DIF] = False
+        if profile_base[Key.PROFILE_ANNOTATION] != profile_port[Key.PROFILE_ANNOTATION]:
+            self.send_match_diff_header(name, context)
+            rpt_target.info(f'  Annotation: Base {profile_base[Key.PROFILE_ANNOTATION]};' +
+                            f' Port {profile_port[Key.PROFILE_ANNOTATION]}')
+        if profile_base[Key.PROFILE_TYPE] != profile_port[Key.PROFILE_TYPE]:
+            self.send_match_diff_header(name, context)
+            rpt_target.info(f'  Type: Base {profile_base[Key.PROFILE_TYPE]};' +
+                            f' Port {profile_port[Key.PROFILE_TYPE]}')
             # 'type' could match 'function'. A class constructor could do the same
             # as a function: logging._logRecordFactory
             # doing that sort of match is going to need smarter processing. Currently
@@ -267,133 +361,162 @@ class ProfilePrototype:
             # ?re-tag the function to be expanded? ?logic to only expand the constructor?
             # process the class constructor now, and match to function signature?
             # -- the class is its constructor??
-        if profile_base[2] != profile_port[2]:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
-            rpt_target.info(f'  "is" tags: Base {profile_base[2]}; Port {profile_port[2]}')
-        if profile_base[3] != profile_port[3]:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
-            rpt_target.info(f'  compare context: Base {profile_base[3]}; Port {profile_port[3]}')
+        if profile_base[Key.PROFILE_TAGS] != profile_port[Key.PROFILE_TAGS]:
+            self.send_match_diff_header(name, context)
+            rpt_target.info(f'  "is" tags: Base {profile_base[Key.PROFILE_TAGS]};' +
+                            f' Port {profile_port[Key.PROFILE_TAGS]}')
+        # compare profile_«»[Key.PROFILE_SOURCE]. Not expecting to match if part of packages
+        # being compared
+        if profile_base[Key.PROFILE_DETAIL] != profile_port[Key.PROFILE_DETAIL]:
+            self.send_match_diff_header(name, context)
+            rpt_target.info(f'  compare context: Base {profile_base[Key.PROFILE_DETAIL]};' +
+                            f' Port {profile_port[Key.PROFILE_DETAIL]}')
 
-        base_category = profile_base[3]
-        port_category = profile_port[3]
+        base_category = profile_base[Key.PROFILE_DETAIL]
+        port_category = profile_port[Key.PROFILE_DETAIL]
         if len(base_category) != len(port_category):
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
+            self.send_match_diff_header(name, context)
             rpt_target.info(f'  context length {len(base_category)} not = {len(port_category)}: ' +
-                            f'can not compare further\n    {base_category}\n    {port_category}')
+                            f'cannot compare further\n    {base_category}\n    {port_category}')
             return
         if len(base_category) != 2:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
+            self.send_match_diff_header(name, context)
             rpt_target.info('  Odd(unhandled) context size '
                 f'{len(base_category)}:\n    {base_category}\n    {port_category}')
             return
         # len(handling_category) == 2
-        if base_category[0] is SentinelTag('Data:Leaf'):
-            print('Leaf context')
-            return
-        if base_category[0] is SentinelTag('Data:Node'):
+        if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE):
             self.queue_attribute_expansion(name, context)
-            print('Node expand context')
+            if not self._shared[Key.HDR_SENT_DIF]:  # Exact match (so far)
+                if self.get_configuration(Cfg.report_exact):
+                    rpt_target.info(
+                        f'"{name}" Expand matched node: {context.base_path}¦{context.port_path}')
             return
-        assert isinstance(base_category[0], str) and isinstance(port_category[0], str), \
-            f'{name} handling category 0 is {type(base_category[0])}, {type(port_category[0])} ' \
-            'instead of str, str.'
-        if base_category[0] != port_category[0]:
-            diff_hdr_sent = send_match_differences_header(rpt_target, name, diff_hdr_sent)
-            rpt_target.info(f'  Handling category 0 "{base_category[0]}" != "{base_category[0]}"' +
-                            f': can not compare further\n    {base_category}\n    {port_category}')
+        if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_LEAF):
+            if not self._shared[Key.HDR_SENT_DIF]:  # Exact match
+                if self.get_configuration(Cfg.report_exact):
+                    rpt_target.info(
+                        f'"{name}" No Difference: {context.base_path}¦{context.port_path}')
             return
-        if base_category[1] is SentinelTag('Other:Expand') and base_category[1] is port_category[1]:
-            assert base_category[0] in ('a class',), \
-                f'Other expand context "{base_category[0]}" found for "{name}" attribute.'
-            self.queue_attribute_expansion(name, context)
-            print('Other:Expand context')
-            return
-        if base_category[1] is SentinelTag('Self:No Expand') \
-                and base_category[1] is port_category[1]:
-            assert base_category[0] in ('dunder class attribute',), \
-                f'Self tag context "{base_category[0]}" found for "{name}" attribute.'
-            print('Self:No Expand context')
-            return
+        self._handle_str_category(name, context, base_category, port_category)
 
-        self.handle_matched_routine(rpt_target, name, base_category, port_category, diff_hdr_sent)
-
-    def handle_matched_routine(self, destination: logging.Logger, name: str,
-            base_category: MethodSignatureDetail, port_category: MethodSignatureDetail,
-            header_sent: bool) -> None:
+    def _handle_str_category(self, name: str, context: MatchingContext, base_category: Tuple,
+                             port_category: Tuple) -> None:
         """
-        Handle reporting (miss) matches of signatures for matched function elements
+        Handles attributes that exist in both base and port implementations, and have a str
+        category 0.
 
         Args:
-            destination (Logger): the report (segment) to append any mismatched information to
+            name (str): The name of the matched attribute.
+            context (MatchingContext): The base and port paths to the (parent of the) attribute,
+                as well the base and port element parents.
+            base_category (Tuple): Attribute category profile information for the attribute in
+                the base implementation.
+            port_category (Tuple): Attribute category profile information for the attribute in
+                the ported implementation.
+        """
+        rpt_target = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        assert isinstance(base_category[Key.DETAIL_KEY], str) and \
+            isinstance(port_category[Key.DETAIL_KEY], str), \
+            f'{name} handling category 0 is {type(base_category[Key.DETAIL_KEY])}, ' + \
+            f'{type(port_category[Key.DETAIL_KEY])} instead of str, str.'
+        if base_category[Key.DETAIL_KEY] != port_category[Key.DETAIL_KEY]:
+            self.send_match_diff_header(name, context)
+            rpt_target.info(f'  Handling category 0 "{base_category[Key.DETAIL_KEY]}" != ' +
+                            f'"{port_category[Key.DETAIL_KEY]}"' +
+                            f': cannot compare further\n    {base_category}\n    {port_category}')
+            return
+        if base_category[Key.DETAIL_CONTENT] is SentinelTag(Tag.OTHER_EXPAND) \
+                and base_category[Key.DETAIL_CONTENT] is port_category[Key.DETAIL_CONTENT]:
+            assert base_category[Key.DETAIL_KEY] in (PrfC.A_CLASS, Is.DATADESCRIPTOR), 'Other ' \
+                f'expand context "{base_category[Key.DETAIL_KEY]}" found for "{name}" attribute.'
+            self.queue_attribute_expansion(name, context)
+            if not self._shared[Key.HDR_SENT_DIF]:  # Exact match (so far)
+                if self.get_configuration(Cfg.report_exact):
+                    rpt_target.info(
+                        f'"{name}" Expand matched other: {context.base_path}¦{context.port_path}')
+            return
+        if base_category[Key.DETAIL_CONTENT] is SentinelTag(Tag.SELF_NO_EXPAND) \
+                and base_category[Key.DETAIL_CONTENT] is port_category[Key.DETAIL_CONTENT]:
+            assert base_category[Key.DETAIL_KEY] in (PrfC.DUNDER,), \
+                f'Self tag context "{base_category[Key.DETAIL_KEY]}" found for "{name}" attribute.'
+            # print('Self:No Expand context')
+            return
+        self.handle_matched_routine(name, context, base_category, port_category)
+
+    @staticmethod
+    def _sanity_check_matched_categories(name: str, base_category: MethodSignatureDetail,
+                                         port_category: MethodSignatureDetail) -> None:
+        """
+        Verify that the high level signature detail information makes sense
+
+        Args:
             name (str): The name of the matched attribute.
             base_category (tuple): the base implementation function signature information
             port_category (tuple): the port implementation function signature information
                 MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
-            header_sent (bool): True if an attribute match header already sent to the report
         """
-        assert isinstance(base_category[1], tuple), \
-            f'{name} handling category 1 is {type(base_category[0])} instead of tuple.' + \
-            f'\n{base_category}\n{port_category}'
-        assert base_category[0] == 'routine', f'unhandled "{base_category[0]}" context 0.' + \
-            f'\n{base_category}\n{port_category}'
-        assert isinstance(base_category[1], tuple) and isinstance(port_category[1], tuple), \
-            f'"routine" category[1], {type(base_category[1]).__name__}, ' + \
-            f'{type(port_category[1]).__name__}, not tuple, tuple'
-        assert len(base_category[1]) == 2 and len(port_category[1]) == 2, \
-            f'len "routine category[1] {len(base_category[1])}, {len(port_category[1])} not 2, 2'
-        base_params, base_anno = base_category[1]
-        port_params, port_anno = port_category[1]
-        diff_hdr_sent = header_sent
-        sig_hdr_sent = False
-        end_detail = ParameterDetail(name='z', kind='KEYWORD_ONLY', annotation='str', default='')
-        parm_sentinel = SentinelTag('No parameter annotation')
+        assert isinstance(base_category[Key.DETAIL_CONTENT], tuple), \
+            f'{name} handling category 1 is {type(base_category[Key.DETAIL_KEY])} ' + \
+            f'instead of tuple.\n{base_category}\n{port_category}'
+        assert base_category[Key.DETAIL_KEY] in (Is.ROUTINE,), 'unhandled' \
+            f' "{base_category[Key.DETAIL_KEY]}" context 0.\n{base_category}\n{port_category}'
+        assert isinstance(base_category[Key.DETAIL_CONTENT], tuple) and \
+            isinstance(port_category[Key.DETAIL_CONTENT], tuple), \
+            '"routine" category[Key.DETAIL_CONTENT], ' \
+            f'{type(base_category[Key.DETAIL_CONTENT]).__name__}, ' + \
+            f'{type(port_category[Key.DETAIL_CONTENT]).__name__}, not tuple, tuple'
+        # print(f'{base_category = }')
+        ele_cnt = 3
+        assert len(base_category[Key.DETAIL_CONTENT]) == ele_cnt and \
+            len(port_category[Key.DETAIL_CONTENT]) == ele_cnt, \
+            'len "routine category[Key.DETAIL_CONTENT] ' \
+            f'{len(base_category[Key.DETAIL_CONTENT])}, ' + \
+            f'{len(port_category[Key.DETAIL_CONTENT])}' + \
+            f' not {ele_cnt}, {ele_cnt}'
+
+    def handle_matched_routine(self, name: str, context: MatchingContext,
+                               base_category: MethodSignatureDetail,
+                               port_category: MethodSignatureDetail) -> None:
+        """
+        Handle reporting (miss) matches of signatures for matched function elements
+
+        Args:
+            name (str): The name of the matched attribute.
+            base_category (tuple): the base implementation function signature information
+            port_category (tuple): the port implementation function signature information
+                MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
+        """
+        self._sanity_check_matched_categories(name, base_category, port_category)
+        destination: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        base_params, base_anno, base_doc = base_category[Key.DETAIL_CONTENT]
+        port_params, port_anno, port_doc = port_category[Key.DETAIL_CONTENT]
         base_iter = tuple_generator(base_params)
         port_iter = tuple_generator(port_params)
-        base_det: ParameterDetail = next(base_iter, end_detail)
-        port_det: ParameterDetail = next(port_iter, end_detail)
-        positional_idx = -1
-        keyword_idx = -1
-        while base_det != end_detail or port_det != end_detail:
-            positional_idx += 1
-            if 'POSITIONAL' in base_det.kind and 'POSITIONAL' in port_det.kind:
-                if base_det.name != port_det.name:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    positional parameter {positional_idx} name: ' +
-                        f'base "{base_det.name}"; port "{port_det.name}"')
-                if base_det.kind != port_det.kind:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    positional parameter {positional_idx} kind: ' +
-                        f'base "{base_det.kind}"; port "{port_det.kind}"')
-                if base_det.annotation != port_det.annotation:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    positional parameter {positional_idx} annotation: ' +
-                        f'base {pretty_annotation(base_det.annotation, parm_sentinel)}; ' +
-                        f'port {pretty_annotation(port_det.annotation, parm_sentinel)}')
-                if base_det.default != port_det.default:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    positional parameter {positional_idx} default: ' +
-                        f'base "{pretty_default(base_det.default)}"; ' +
-                        f'port "{pretty_default(port_det.default)}"')
-                base_det = next(base_iter, end_detail)
-                port_det = next(port_iter, end_detail)
+        base_det: ParameterDetail = next(base_iter, self.END_DETAIL)
+        port_det: ParameterDetail = next(port_iter, self.END_DETAIL)
+        self._shared[Key.HDR_SENT_SIG] = False
+        self._shared[Key.POS_IDX] = -1
+        self._shared[Key.KEY_IDX] = -1
+        while self.END_DETAIL not in (base_det, port_det):
+            self._shared[Key.POS_IDX] += 1
+            if Match.POSITIONAL in base_det.kind and Match.POSITIONAL in port_det.kind:
+                self._handle_matched_parameters(name, context, Key.POS_PARAM_TYPE,
+                                                base_det, port_det)
+                base_det = next(base_iter, self.END_DETAIL)
+                port_det = next(port_iter, self.END_DETAIL)
                 continue
-            if 'POSITIONAL' in base_det.kind:
-                diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
+            if Match.POSITIONAL in base_det.kind:
+                self.send_match_sig_header(name, context)
                 destination.info(
-                    f'    positional parameter {positional_idx} in base but not port: {base_det}')
-                base_det = next(base_iter, end_detail)
+                    f'{self._param_prefix(Key.POS_PARAM_TYPE)} in base but not port: {base_det}')
+                base_det = next(base_iter, self.END_DETAIL)
                 continue
-            if 'POSITIONAL' in port_det.kind:
-                diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
+            if Match.POSITIONAL in port_det.kind:
+                self.send_match_sig_header(name, context)
                 destination.info(
-                    f'    positional parameter {positional_idx} in port but not base: {port_det}')
-                port_det = next(port_iter, end_detail)
+                    f'{self._param_prefix(Key.POS_PARAM_TYPE)} in port but not base: {port_det}')
+                port_det = next(port_iter, self.END_DETAIL)
                 continue
             # handle keyword (non-positional) parameters
             # potentially these could be out of order matches, to the logic here could be made
@@ -402,55 +525,71 @@ class ProfilePrototype:
 
             # Currently *assumes* that keyword entries are in the same order for base and port.
             # If they are not, mismatches will be reported.
-            keyword_idx += 1
-            if base_det != end_detail and port_det != end_detail:
-                if base_det.name != port_det.name:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    keyword parameter {keyword_idx} name: ' +
-                        f'base "{base_det.name}"; port "{port_det.name}"')
-                if base_det.kind != port_det.kind:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    keyword parameter {keyword_idx} kind: ' +
-                        f'base "{base_det.kind}"; port "{port_det.kind}"')
-                if base_det.annotation != port_det.annotation:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    keyword parameter {keyword_idx} annotation: ' +
-                        f'base {pretty_annotation(base_det.annotation, parm_sentinel)}; ' +
-                        f'port {pretty_annotation(port_det.annotation, parm_sentinel)}')
-                if base_det.default != port_det.default:
-                    diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                    sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                    destination.info(f'    keyword parameter {keyword_idx} default: ' +
-                        f'base "{pretty_default(base_det.default)}"; ' +
-                        f'port "{pretty_default(port_det.default)}"')
-                base_det = next(base_iter, end_detail)
-                port_det = next(port_iter, end_detail)
+            self._shared[Key.KEY_IDX] += 1
+            if base_det is not None and port_det is not None:
+                self._handle_matched_parameters(name, context, Key.KEY_PARAM_TYPE,
+                                                base_det, port_det)
+                base_det = next(base_iter, self.END_DETAIL)
+                port_det = next(port_iter, self.END_DETAIL)
                 continue
-            if base_det != end_detail:
-                diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-                sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-                destination.info(
-                    f'    keyword parameter {keyword_idx} in base but not port: {base_det}')
-                base_det = next(base_iter, end_detail)
+            if base_det is not None:
+                self.send_match_sig_header(name, context)
+                destination.info(f'{self._param_prefix(Key.KEY_PARAM_TYPE)} in base ' +
+                                 f'but not port: {base_det}')
+                base_det = next(base_iter, self.END_DETAIL)
                 continue
-            diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-            sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-            destination.info(
-                f'    keyword parameter {keyword_idx} in port but not base: {port_det}')
-            port_det = next(port_iter, end_detail)
+            self.send_match_sig_header(name, context)
+            destination.info(f'{self._param_prefix(Key.KEY_PARAM_TYPE)} in port ' +
+                             f'but not base: {port_det}')
+            port_det = next(port_iter, self.END_DETAIL)
 
-        sentinel = SentinelTag('No return annotation')
         if base_anno != port_anno:
-            diff_hdr_sent = send_match_differences_header(destination, name, diff_hdr_sent)
-            sig_hdr_sent = send_match_sig_header(destination, sig_hdr_sent)
-            destination.info('   routine return annotation: '
-                f'base {pretty_annotation(base_anno, sentinel)}; ' +
-                f'port {pretty_annotation(port_anno, sentinel)}')
+            if Ignore.scope_annotation not in self.get_configuration(Cfg.ignore_differences):
+                self.send_match_sig_header(name, context)
+                destination.info('    routine return annotation: base '
+                    f'{pretty_annotation(base_anno, SentinelTag(Tag.NO_RETURN_ANNOTATION))}; ' +
+                    f'port {pretty_annotation(port_anno, SentinelTag(Tag.NO_RETURN_ANNOTATION))}')
+        if base_doc != port_doc:
+            if Ignore.docstring not in self.get_configuration(Cfg.ignore_differences):
+                self.send_match_sig_header(name, context)
+                destination.info(f'    routine docstring: base ¦{base_doc}¦; port ¦{port_doc}¦')
 
-    def handle_unmatched_attribute(self, base_or_port: str, name: str, profile_base: Tuple) -> None:
+    def _handle_matched_parameters(self, name: str, context: MatchingContext, param_type: str,
+            base_det: ParameterDetail, port_det: ParameterDetail) -> None:
+        """
+        Handle reporting miss-matches between base and port positional parameter details
+
+        Args:
+            name (str): The name of the matched attribute.
+            base_det (ParameterDetail): the base implementation parameter signature information
+            port_det (ParameterDetail): the port implementation parameter signature information
+        """
+        destination: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        if base_det.name != port_det.name:
+            self.send_match_sig_header(name, context)
+            destination.info(f'{self._param_prefix(param_type)} name: ' +
+                f'base "{base_det.name}"; port "{port_det.name}"')
+        if base_det.kind != port_det.kind:
+            self.send_match_sig_header(name, context)
+            destination.info(f'{self._param_prefix(param_type)} kind: ' +
+                f'base "{base_det.kind}"; port "{port_det.kind}"')
+        if base_det.annotation != port_det.annotation:
+            self.send_match_sig_header(name, context)
+            # pylint:disable=line-too-long
+            destination.info(f'{self._param_prefix(param_type)} annotation: ' +
+                f'base {pretty_annotation(base_det.annotation, SentinelTag(Tag.NO_PARAMETER_ANNOTATION))}; ' +
+                f'port {pretty_annotation(port_det.annotation, SentinelTag(Tag.NO_PARAMETER_ANNOTATION))}')
+        if base_det.default != port_det.default:
+            self.send_match_sig_header(name, context)
+            destination.info(f'{self._param_prefix(param_type)} default: ' +
+                f'base {pretty_default(base_det.default)}; ' +
+                f'port {pretty_default(port_det.default)}')
+
+    def _param_prefix(self, param_type: str) -> str:
+        """formatted indexed positional parameter information prefix"""
+        return f'    {param_type} parameter {self._shared[Key.POS_IDX]}'
+
+    def handle_unmatched_attribute(self, base_or_port: str, name: str, profile: Tuple) -> None:
         """
         Handles attributes that exist in only one of the base and port implementations
 
@@ -460,30 +599,34 @@ class ProfilePrototype:
             profile_base (Tuple): The profile information for the implemented attribute.
                 Tuple[StrOrTag, str, Tuple[str], Tuple[tuple, StrOrTag]]
         """
-        validate_profile_data(name, profile_base)
+        validate_profile_data(name, base_or_port, profile)
         if base_or_port == 'base':
-            rpt_target = self._reports[self.REPORT_NOT_IMPLEMENTED]
+            rpt_target = self._reports[Key.REPORT_NOT_IMPLEMENTED]
         else:
-            rpt_target = self._reports[self.REPORT_EXTENSION]
-        if report_profile_data_exceptions(rpt_target, name, profile_base):
+            rpt_target = self._reports[Key.REPORT_EXTENSION]
+        if report_profile_data_exceptions(rpt_target, name, profile):
             return
 
         # pylint:disable=logging-fstring-interpolation
-        if profile_base[3][0] == 'routine':
-            sig = profile_base[3][1]
-            if not (isinstance(sig, tuple) and len(sig) == 2 and isinstance(sig[0], tuple)):
+        if profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] == 'routine':
+            sig = profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]
+            if not (isinstance(sig, tuple) and len(sig) == Key.SIG_ELEMENTS
+                    and isinstance(sig[Key.SIG_PARAMETERS], tuple)):
                 rpt_target.error(f'**** {type(sig).__name__ = } {len(sig) = } ' +
-                    f'{type(sig[0]).__name__ = } {type(sig[1]).__name__ = } ****')
+                    f'{type(sig[Key.SIG_PARAMETERS]).__name__ = } ' +
+                    f'{type(sig[Key.SIG_RETURN]).__name__ = } ****')
                 return
-            rpt_target.info(f'{name}, {profile_base[0]}, {profile_base[1]}, ' +
-                               f'{profile_base[2]}, {len(sig[0])}')
-            for field in sig[0]:
+            rpt_target.info(f'{name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
+                f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
+                f'{profile[Key.PROFILE_TAGS]}, {len(sig[Key.SIG_PARAMETERS])}')
+            for field in sig[Key.SIG_PARAMETERS]:
                 assert isinstance(field, ParameterDetail), f'{type(field) = }¦{sig =}'
                 rpt_target.info(f'    {field}')
-            rpt_target.info(f'    {sig[1]}')
+            rpt_target.info(f'    {sig[Key.SIG_RETURN]}')
         else:
-            rpt_target.info(f'{name}, {profile_base[0]}, {profile_base[1]}, {profile_base[2]},' +
-                               f'\n    {profile_base[3]}')
+            rpt_target.info(f'{name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
+                f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
+                f'{profile[Key.PROFILE_TAGS]},\n    {profile[Key.PROFILE_DETAIL]}')
 
     def queue_attribute_expansion(self, name: str, context: MatchingContext) -> None:
         """
@@ -503,54 +646,57 @@ class ProfilePrototype:
 
     def report_match_details(self) -> None:
         """Generate the report(s) for the module comparison"""
-        print('\nNot Implemented in "" port implementation.')
+        print(f'\nMatched in "{self._base_module}" base and "{self._port_module}"'
+              ' port implementations.')
+        self.report_section_details(Key.REPORT_MATCHED_ATTRIBUTE)
+
+        print(f'\nNot Implemented in "{self._port_module}" port implementation.')
         print('Attribute, Base Annotation, Type, "is" Tags, Count, Details¦Fields')
-        rpt_content: ListHandler = self.get_logger(self.REPORT_NOT_IMPLEMENTED).handlers[0]
-        for rec in rpt_content.log_records:
-            print(rec.msg)
-        # # for rec in rpt_content.log_records:
-        # #     print(message)
+        self.report_section_details(Key.REPORT_NOT_IMPLEMENTED)
 
-        print('\nExtensions in the "" port implementation.')
+        print(f'\nExtensions in the "{self._port_module}" port implementation.')
         print('Attribute, Base Annotation, Type, "is" Tags, Count, Details¦Fields')
-        rpt_content: ListHandler = self.get_logger(self.REPORT_EXTENSION).handlers[0]
-        for rec in rpt_content.log_records:
+        self.report_section_details(Key.REPORT_EXTENSION)
+
+        print('\nSkipped attributes for '
+              f'"{self._base_module}" (base) and "{self._port_module}" (port)')
+        self.report_section_details(Key.REPORT_ATTRIBUTE_SKIPPED)
+
+    def report_section_details(self, section: str) -> None:
+        """
+        print a single report section
+
+        Args:
+            section (str): The name of logger use to buffer the content
+        """
+        content: ListHandler = self.get_logger(section).handlers[0]
+        for rec in content.log_records:
             print(rec.msg)
 
-        print('\nSkipped attributes for "" (base) '
-              'and "" (port)')
-        rpt_content: ListHandler = self.get_logger(self.REPORT_ATTRIBUTE_SKIPPED).handlers[0]
-        for rec in rpt_content.log_records:
-            print(rec.msg)
+    def send_match_diff_header(self, name: str, context: MatchingContext) -> None:
+        """
+        Send a (report detail block) header line, if it has not yet been sent
 
-def send_match_differences_header(destination: logging.Logger, name: str, sent: bool) -> bool:
-    """
-    Send a (report detail block) header line, if it has not yet been sent
+        Args:
+            name (str) the name of the attribute being reported
+        """
+        target: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        if not self._shared[Key.HDR_SENT_DIF]:
+            target.info(f'"{name}" Differences: {context.base_path}¦{context.port_path}')
+            self._shared[Key.HDR_SENT_DIF] = True
 
-    Args:
-        destination (Logger): the report (segment) to append any exception information to
-        name (str) the name of the attribute being reported
-        sent (bool) a flag that is true only if a header line has already been sent
+    def send_match_sig_header(self, name: str, context: MatchingContext) -> None:
+        """
+        Send a (method signature block) header line, if it has not yet been sent
 
-    Returns True
-    """
-    if not sent:
-        destination.info(f'{name} Differences:')
-    return True
-
-def send_match_sig_header(destination: logging.Logger, sent: bool) -> bool:
-    """
-    Send a (method signature block) header line, if it has not yet been sent
-
-    Args:
-        destination (Logger): the report (segment) to append method signature match information to
-        sent (bool) a flag that is true only if a signature header has already been sent
-
-    Returns True
-    """
-    if not sent:
-        destination.info('  Method Parameters:')
-    return True
+        Args:
+            name (str) the name of the attribute being reported
+        """
+        self.send_match_diff_header(name, context)
+        target: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        if not self._shared[Key.HDR_SENT_SIG]:
+            target.info('  Method Parameters:')
+            self._shared[Key.HDR_SENT_SIG] = True
 
 def pretty_annotation(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
@@ -573,9 +719,9 @@ def pretty_default(default: Hashable) -> str:
 
     Returns (str) Formatted default value information, without the SentinelTag
     """
-    return '«none»' if default is SentinelTag('No Default') \
-        else 'None' if default is None else \
-        f':{type(default).__name__} {default:s}'
+    return '«none»' if default is SentinelTag(Tag.NO_DEFAULT) \
+        else '"None"' if default is None else \
+        f':{type(default).__name__} "{default}"'
 
 def tuple_generator(src: tuple):
     """
@@ -586,7 +732,7 @@ def tuple_generator(src: tuple):
     """
     yield from src
 
-def validate_profile_data(name: str, profile_data: Tuple) -> None:
+def validate_profile_data(name: str, path: Tuple[str], profile_data: Tuple) -> None:
     """
     Do some sanity checks on the prototype profile information
 
@@ -599,37 +745,67 @@ def validate_profile_data(name: str, profile_data: Tuple) -> None:
         f'{type(name).__name__ = } ¦ {name}¦{profile_data}'
     assert isinstance(profile_data, tuple), \
         f'{type(profile_data).__name__ = } ¦ {name}¦{profile_data}'
-    assert len(profile_data) == 4, \
+    assert len(profile_data) == Key.PROFILE_ELEMENTS, \
         f'{len(profile_data) = } ¦ {name}¦{profile_data}'
-    assert isinstance(profile_data[0], StrOrTag), \
-        f'{type(profile_data[0]).__name__ = } ¦ {name}¦{profile_data}'
-    assert isinstance(profile_data[1], str), \
-        f'{type(profile_data[1]).__name__ = } ¦ {name}¦{profile_data}'
-    assert isinstance(profile_data[2], tuple), \
-        f'{type(profile_data[2]).__name__ = } ¦ {name}¦{profile_data}'
-    # assert profile_data[2] contains 0 or more str
-    assert isinstance(profile_data[3], tuple), \
-        f'{type(profile_data[3]).__name__ = } ¦ {name}¦{profile_data}'
-    assert len(profile_data[3]) == 2, f'{len(profile_data[3]) = } ¦ {name}¦{profile_data}'
-    assert isinstance(profile_data[3][0], StrOrTag), \
-        f'{type(profile_data[3][0]).__name__ = } ¦ {name}¦{profile_data}'
-    if isinstance(profile_data[3][0], str):
-        assert profile_data[3][0] in ('routine', 'a class', 'something else to be handled',
-                'module', 'package.class.instance', 'dunder class attribute'), \
-            f'str but {profile_data[3][0] = } ¦ {name}¦{profile_data}'
-        if profile_data[3][0] in ('a class', 'package.class.instance'):
-            assert profile_data[3][1] is SentinelTag('Other:Expand'), \
-                f'expected expand: {type(profile_data[3][1]).__name__} ¦ {name}¦{profile_data}'
-        elif profile_data[3][0] == 'module':
+    assert isinstance(profile_data[Key.PROFILE_ANNOTATION], StrOrTag), \
+        f'{type(profile_data[Key.PROFILE_ANNOTATION]).__name__ = } ¦ {name}¦{profile_data}'
+    assert isinstance(profile_data[Key.PROFILE_TYPE], str), \
+        f'{type(profile_data[Key.PROFILE_TYPE]).__name__ = } ¦ {name}¦{profile_data}'
+    assert isinstance(profile_data[Key.PROFILE_SOURCE], tuple), \
+        f'{type(profile_data[Key.PROFILE_SOURCE]).__name__ = } ¦ {name}¦{profile_data}'
+    assert len(profile_data[Key.PROFILE_SOURCE]) == Key.SOURCE_ELEMENTS, \
+        f'{len(profile_data[Key.PROFILE_SOURCE]).__name__ = } ¦ {name}¦{profile_data}'
+    assert isinstance(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE], (str, SentinelTag)), \
+        f'{type(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE]).__name__ = }' + \
+        f' ¦ {name}¦{profile_data}'
+    if isinstance(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE], SentinelTag):
+        assert profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE] is SentinelTag(Tag.NO_SOURCE), \
+            f'{type(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE]).__name__ = }' + \
+            f' ¦ {name}¦{profile_data}'
+        assert profile_data[Key.PROFILE_SOURCE][Key.SOURCE_MODULE] is None, \
+            f'{profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE]} ' + \
+            f'{type(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_MODULE]).__name__ = }' + \
+            f' ¦ {name}¦{profile_data}'
+    else:
+        assert profile_data[Key.PROFILE_SOURCE][Key.SOURCE_MODULE] is not None, \
+            f'{profile_data[Key.PROFILE_SOURCE][Key.SOURCE_FILE]} ' + \
+            f'{type(profile_data[Key.PROFILE_SOURCE][Key.SOURCE_MODULE]).__name__ = }' + \
+            f' ¦ {name}¦{profile_data}'
+    assert isinstance(profile_data[Key.PROFILE_TAGS], tuple), \
+        f'{type(profile_data[Key.PROFILE_TAGS]).__name__ = } ¦ {name}¦{profile_data}'
+    # assert profile_data[Key.PROFILE_TAGS] contains 0 or more str
+    assert isinstance(profile_data[Key.PROFILE_DETAIL], tuple), \
+        f'{type(profile_data[Key.PROFILE_DETAIL]).__name__ = } ¦ {name}¦{profile_data}'
+    assert len(profile_data[Key.PROFILE_DETAIL]) == Key.DETAIL_ELEMENTS, \
+        f'{len(profile_data[Key.PROFILE_DETAIL]) = } ¦ {name}¦{profile_data}'
+    assert isinstance(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY], StrOrTag), \
+        f'{type(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY]).__name__ = }' + \
+        ' ¦ {name}¦{profile_data}'
+    if isinstance(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY], str):
+        assert profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] in (Is.ROUTINE, Is.MODULE,
+                Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.PKG_CLS_INST, PrfC.DUNDER), \
+            f'str but {profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] = } ¦ {name}¦{profile_data}'
+        if profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
+            assert profile_data[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT] \
+                is SentinelTag(Tag.OTHER_EXPAND), 'expected expand: ' \
+                f'{type(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]).__name__}' + \
+                f' ¦ {name}¦{profile_data}'
+        elif profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] == Is.MODULE:
             raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile_data)))
         # something else: app error?
-    elif profile_data[3][0] is SentinelTag('Data:Leaf'):
-        assert isinstance(profile_data[3][1], (type(None), str, int, float)), \
-            f'leaf but {type(profile_data[3][1]).__name__ = } ¦ {name}¦{profile_data}'
+    elif profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] is SentinelTag(Tag.DATA_LEAF):
+        assert isinstance(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT], (type(None), str,
+                int, float)), \
+            f'leaf but {type(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]).__name__ = }' + \
+            f' ¦ {name}¦{profile_data}'
     else:
-        print(f'**** {name = }, {profile_data} ****')
-        assert profile_data[3][0] is SentinelTag('Data:Node'), \
-            f'{type(profile_data[3][0]).__name__ = } ¦ {name}¦{profile_data}'
+        assert profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE), \
+            f'{type(profile_data[Key.PROFILE_DETAIL][Key.DETAIL_KEY]).__name__ = } ¦{path}¦' + \
+            f'{name}¦{profile_data}'
+        assert profile_data[Key.PROFILE_TAGS] == (), \
+            f'{profile_data[Key.PROFILE_TAGS] = } ¦{path}¦{name}¦{profile_data}'
+        if profile_data[Key.PROFILE_TYPE] not in ('list', 'dict'):
+            print(f'**** {path} {name = }, {profile_data} ****')
 
 def report_profile_data_exceptions(destination: logging.Logger, name: str,
                                    profile_data: Tuple) -> bool:
@@ -647,15 +823,17 @@ def report_profile_data_exceptions(destination: logging.Logger, name: str,
         False when no exception case has been detected
     """
     details_count = len(profile_data)
-    if details_count != 4:
+    if details_count != Key.PROFILE_ELEMENTS:
         destination.error(f'**** {details_count =} ¦ {name}¦{profile_data} ****')
         return True
-    if not isinstance(profile_data[3], tuple):
+    if not isinstance(profile_data[Key.PROFILE_DETAIL], tuple):
         destination.error(
-            f'**** {type(profile_data[3]).__name__ =} ¦ {name}¦{profile_data} ****')
+            f'**** {type(profile_data[Key.PROFILE_DETAIL]).__name__ =} ¦ {name}¦{profile_data} '
+            '****')
         return True
-    if len(profile_data[3]) != 2:
-        destination.error(f'**** {len(profile_data[3]) =} ¦ {name}¦{profile_data} ****')
+    if len(profile_data[Key.PROFILE_DETAIL]) != Key.DETAIL_ELEMENTS:
+        destination.error(
+            f'**** {len(profile_data[Key.PROFILE_DETAIL]) =} ¦ {name}¦{profile_data} ****')
         return True
     return False
 
@@ -676,6 +854,14 @@ def print_logger_hierarchy(logger: logging.Logger, indent: int=0) -> None:
 
 # Demonstration with sample case
 ATTR_SCOPE = 'all'
+REPORT_EXACT_MATCH = True
+IGNORE_DOCSTRING_DIFFERENCES = True
+# Ignore port Annotation when not defined in base
+IGNORE_ADDED_ANNOTATION_ALL = False
+IGNORE_ADDED_ANNOTATION_PARAM = False
+IGNORE_ADDED_ANNOTATION_RETURN = False
+IGNORE_ADDED_ANNOTATION_SCOPE = False
+# StrictAnnotation
 if __name__ == '__main__':
     cmp = ProfilePrototype('logging', 'lib.adafruit_logging')
     # cmp.match_attributes()
@@ -683,5 +869,7 @@ if __name__ == '__main__':
 
     # match_attributes('logging', 'lib.adafruit_logging')
 
-# cSpell:words adafruit, dunder, inspectable, typehints
+# cSpell:words adafruit, dunder, inspectable
+# cSpell:words datadescriptor
 # cSpell:ignore fstring
+# cSpell:allowCompoundWords true
