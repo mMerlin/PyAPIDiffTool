@@ -140,6 +140,10 @@ class SentinelTag:
         """
         raise AttributeError("SentinelTag instances are immutable.")
 
+StrOrTag = Union[str, SentinelTag]
+AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
+                         Tuple[tuple, StrOrTag]]
+
 @dataclass(frozen=True)
 class Tag:
     """
@@ -150,6 +154,7 @@ class Tag:
     NO_RETURN_ANNOTATION: str = 'No return annotation'
     SYS_EXCLUDE: str = 'System:Exclude'
     BUILTIN_EXCLUDE: str = 'builtin:Exclude'
+    GET_SOURCE_FAILURE: str = 'got type, not expected object'
     DATA_LEAF: str = 'Data:Leaf'
     DATA_NODE: str = 'Data:Node'
     OTHER_EXPAND: str = 'Other:Expand'
@@ -159,6 +164,7 @@ class Tag:
     DATA_UNHANDLED: str = 'Data:Unhandled'
     NOT_AN_ATTRIBUTE: str = 'Not an attribute'
     NO_ATTRIBUTE_ANNOTATION: str = 'no attribute annotation'
+    NO_DATA_ANNOTATION: str = 'no annotation for data'
     NO_DOCSTRING: str = 'No docstring'
     NO_SOURCE: str = 'No source file'
     NO_TYPEHINT = SentinelTag('no attribute annotation')
@@ -171,6 +177,7 @@ class ProfileConstant:
     # pylint:disable=invalid-name,too-many-instance-attributes
     DUNDER: str = 'dunder class attribute'
     A_CLASS: str = 'a class'
+    NAMEDTUPLE: str = 'namedtuple'
     # SOMETHING_ELSE: str = 'something else to be handled'
     EXTERN_MODULE: str = 'external.module'
     PKG_CLS_INST: str = 'package.class.instance'
@@ -206,7 +213,7 @@ class InspectIs:
     TRACEBACK: str = 'traceback'
 
 @dataclass
-class ObjectContextData:
+class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     """
     Data class to hold object context (attribute name) information.
     """
@@ -214,18 +221,23 @@ class ObjectContextData:
     """path to object, starting at module"""
     element: object
     """the actual object"""
-    source: str
+    source: str = None
     """the source file for the object (definition)"""
-    typehints: dict
+    mode: str = 'generic'
+    """hint for how to profile attributes"""
+    module: types.ModuleType = None
+    """the module that element is (or is contained in)"""
+    typehints: dict = None
     """get_type_hints(element) if isinstance(element, (type, types.MethodType, types.FunctionType,
            types.ModuleType)) else {}"""
     # attribute names
-    all: Tuple[str]
+    all: Tuple[str] = None
     """tuple(dir(obj))"""
-    published: Tuple[str]
+    published: Tuple[str] = None
     """tuple(getattr(element, '__all__', []))"""
-    public: Tuple[str]
+    public: Tuple[str] = None
     """tuple(attr for attr in all if public_attr_name(attr))"""
+    skipped: int = 0
 
 # Sample data classes not currently being used. Kept to be used if needed for debugging
 @dataclass()
@@ -313,6 +325,52 @@ class ListHandler(logging.Handler):
         return tuple((rec.name, rec.levelname, rec.levelno, rec.msg, rec.args)
                      for rec in self.log_records)
 
+def populate_object_context(context: ObjectContextData) -> None:
+    """
+    Populate the fields for an existing ObjectContextData instance with context data
+    for an element in either 'base' or 'port' implementation.
+
+    Args:
+        context (ObjectContextData): existing instance to fill in with context information
+            about the element. The element field needs to be already populated. The path
+            field can be, but it is not used or updated.
+        path (tuple): The attribute names leading to the object. The root (first) element
+            is the name (path) for the module.
+            Tuple[str, ...]
+        element (object): The element to get context information for.
+
+    Output:
+        updated context
+    """
+    ele = context.element
+    context.source = get_object_source_file(ele)
+    context.typehints = get_type_hints(ele) if isinstance(ele,
+            (type, types.MethodType, types.FunctionType, types.ModuleType)) \
+        else {}
+    context.all = tuple(dir(ele))
+    context.published = tuple(getattr(ele, '__all__', []))
+    context.public = tuple(attr for attr in context.all if public_attr_name(attr))
+    if isinstance(ele, types.ModuleType):
+        context.module = ele
+        # context.mode = 'module'
+    else:
+        context.module = inspect.getmodule(ele)
+        if isinstance(ele, Sequence):
+            assert isinstance(ele, (list, tuple, set)), \
+                f'Only a subset of Sequence types expected: not {type(ele)}'
+            context.mode = 'sequence'
+            # context.published = tuple(f'index_{i}' for i in range(len(ele) + 1))
+            context.published = tuple(range(len(ele)))
+        elif isinstance(ele, (dict, types.MappingProxyType)):
+            context.mode = 'key_value'
+            context.published = tuple((i, key) for i, key in enumerate(ele.keys()))
+        # elif isinstance(ele, type) and issubclass(ele, tuple) and hasattr(ele, '_fields'):
+        #     context.mode = 'namedtuple'
+        #     context.published = getattr(ele, '_fields')
+        #     # handled as a Data:Leaf at the parent level
+        # elif isinstance(ele, type):
+        #     context.mode = 'class'
+
 def get_object_context_data(path: Tuple[str], element: object) -> ObjectContextData:
     """
     Populates and returns context data for an element in either 'base' or 'port'
@@ -349,8 +407,22 @@ def get_object_source_file(element: object) -> Union[str, SentinelTag]:
         try:
             return inspect.getsourcefile(element)
         except TypeError as exc:
-            if len(exc.args) == 1 and exc.args[0].endswith("' (built-in)> is a built-in module"):
-                return SentinelTag(Tag.BUILTIN_EXCLUDE)
+            if len(exc.args) == 1:
+                if exc.args[0].endswith("' (built-in)> is a built-in module") \
+                        or exc.args[0].endswith("> is a built-in class"):
+                        # or exc.args[0] == "<class 'type'> is a built-in class" \
+                        # or exc.args[0] == "<class 'mappingproxy'> is a built-in class":
+                    # type, mappingproxy, getset_descriptor, ?…
+                    return SentinelTag(Tag.BUILTIN_EXCLUDE)
+                if exc.args[0] == 'module, class, method, function, traceback, frame, ' \
+                        'or code object was expected, got type':
+                    # occurs (at least) for special attributes like __call_getitem__. To avoid
+                    # crashing, a special tag is returned. Calling code can use that tag, plus
+                    # other context information to determine if using the source file of the
+                    # parent attribute is a reasonable fall back. Assuming the attribute *IS*
+                    # something it should be valid to get source for, it usually is, but there
+                    # are some edge cases where it will not be.
+                    return SentinelTag(Tag.GET_SOURCE_FAILURE)
             raise
     return SentinelTag(Tag.NO_SOURCE)
 
@@ -367,33 +439,52 @@ def get_attribute_source(attribute: Any) -> Tuple[str, types.ModuleType]:
     src_file = get_object_source_file(attribute)
     src_module = inspect.getmodule(attribute)
     if src_file is SentinelTag(Tag.NO_SOURCE):
-        # src_module.__name__ == 'typing.
         if src_module is not None:
             assert isinstance(src_module, types.ModuleType), \
                 f'BAD source pattern: {src_file = }, {src_module = }'
-            if src_module.__name__ not in ('typing', 'logging'):  # DEBUG
-                assert src_module.__name__ in ('typing',), \
-                    f'{src_module.__name__ = } with {src_file = }'
-        # assert src_module is None, f'New source pattern: {src_file = }, {src_module = }'
-    elif src_file is SentinelTag(Tag.BUILTIN_EXCLUDE):
+            # debug_modules = (
+            #     'logging',
+            #     'lib.adafruit_logging',
+            #     'typing',
+            #     '_weakrefset',
+            #     'weakref',
+            #     '_thread',
+            #     'string',
+            #     'importlib._bootstrap_external',
+            #     'importlib._bootstrap',
+            # )
+            # if src_module.__name__ not in debug_modules:  # DEBUG
+            #     assert src_module.__name__ in debug_modules, \
+            #         f'{src_module.__name__ = } with {src_file = }'
+    elif src_file is SentinelTag(Tag.BUILTIN_EXCLUDE) or \
+            src_file is SentinelTag(Tag.GET_SOURCE_FAILURE):
         assert isinstance(src_module, types.ModuleType), \
+            f'New source pattern: {src_file = }, {src_module = }'
+    elif src_file is None:
+        assert src_module is None, \
             f'New source pattern: {src_file = }, {src_module = }'
     else:
         assert isinstance(src_file, str) and isinstance(src_module, types.ModuleType), \
             f'New source pattern: {src_file = }, {src_module = }'
     return src_file, src_module
 
-def attribute_name_compare_key(attribute_name: str) -> Tuple[int, str]:
+def attribute_name_compare_key(attribute_name: Union[str, tuple[int, str]]) -> Tuple[int, str]:
     """
     Generate a sort key for attribute names, prioritizing public, dunder, leading double
     underscore, and private attribute names in that order.
 
+    If a tuple is provided instead of a str, return it unaltered. It is supposed to already
+    contain the proper sorting index as the first element.
+
     Args:
-        attribute_name (str): The name of the attribute.
+        attribute_name (Union[str, tuple[int, str]]): The name of the attribute, or a tuple
+            with numeric sort key and value.
 
     Returns:
         Tuple[int, str]: A tuple containing a numerical key for sorting and the attribute name.
     """
+    if isinstance(attribute_name, tuple):
+        return attribute_name
     if attribute_name.startswith('__') and attribute_name.endswith('__'):  # dunder
         generated_key = 1
     elif attribute_name.startswith('__'):
@@ -492,14 +583,25 @@ def get_value_information(value: Any) -> Tuple[SentinelTag, Any]:
     """
     simple_types = (type(None), bool, int, float, complex, enum.Enum, decimal.Decimal,
                     fractions.Fraction, str, bytes, bytearray)
-    complex_types = (list, tuple, dict, set, Mapping, Sequence, Set, FrozenSet)
+    nested_types = (list, tuple, set)
+    complex_types = (list, tuple, dict, set, Mapping, Sequence, types.MappingProxyType)
+        #, Set, FrozenSet
 
-    # Simple types directly return the value
+    # Simple types directly return the value(s)
     if isinstance(value, simple_types):
         return SentinelTag(Tag.DATA_LEAF), value
-    # Complex types indicate a placeholder for future expansion
+    if isinstance(value, nested_types) and \
+            all(isinstance(ele, simple_types) for ele in value):
+        return SentinelTag(Tag.DATA_LEAF), repr(value)
+    if isinstance(value, (dict, types.MappingProxyType)) and \
+            all(isinstance(ele, simple_types) for ele in value.values()):
+        return SentinelTag(Tag.DATA_LEAF), repr(value)
+    if not isinstance(value, nested_types) and isinstance(value, Sequence):
+        raise ValueError(f'Unhandled Sequence type: {type(value)}')
     if isinstance(value, complex_types):
         return SentinelTag(Tag.DATA_NODE), '«to be expanded»'
+    if isinstance(value, types.FunctionType):
+        return (InspectIs.ROUTINE, get_signature(value))
     # Catch-all for unhandled types
     return SentinelTag(Tag.DATA_UNHANDLED), ApplicationFlagError('UnhandledDataType')
 
@@ -648,8 +750,67 @@ def get_module_info(attribute: types.ModuleType) -> Tuple[str]:
     return InspectIs.MODULE, getattr(attribute, '__package__', '«pkg»'), \
         getattr(attribute, '__path__', '«pth»')
 
-def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
-        str, Union[str, SentinelTag], tuple]:
+def namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
+    """
+    namedtuple as a tuple of its fields
+
+    Args:
+        attribute (type): An attribute that is a namedtuple
+    """
+    # pylint:disable=protected-access
+    if not (isinstance(attribute, type) and issubclass(attribute, tuple) and
+            hasattr(attribute, '_fields') and isinstance(attribute._fields, tuple) and
+            all(isinstance(ele, str) for ele in attribute._fields)):
+        raise ValueError(f'Not a namedtuple: {type(attribute)}')
+    return ProfileConstant.NAMEDTUPLE, repr(attribute._fields)
+
+def _key_value_info(context: ObjectContextData, attr_name: str) -> Tuple[str, AttributeProfile]:
+    """
+    Calculate the profile for an element of a dict or mappingproxy object
+
+    Args:
+        context (ObjectContextData): The context (with object) whose attribute is being inspected.
+        attr_name (str): The name of the attribute.
+
+    Returns:
+        Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
+            collected about it, or a tuple containing error information if an error occurred.
+    """
+    assert context.mode == 'key_value', \
+        f'only handle key_value context attributes: {context.mode = }'
+    assert isinstance(context.element, (dict, types.MappingProxyType)), \
+        f'cannot process {type(context.element).__name__} in a key_value context'
+    assert isinstance(attr_name, tuple) and len(attr_name) == 2, \
+        f'attribute name for key_value needs to be (index, key): {attr_name}'
+    attribute = context.element[attr_name[1]]
+    details = []
+    if isinstance(attribute, types.FunctionType):
+        details.append(get_annotation_info(  # __dict__ includes methods
+            context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION))
+    else:
+        details.append(SentinelTag(Tag.NO_DATA_ANNOTATION))
+    details.append(type(attribute).__name__)
+    details.append((SentinelTag(Tag.NO_SOURCE), None))  # no source info for data
+    details.append(())  # no "is" tags for data
+    details.append(get_value_information(attribute))
+    return attr_name, tuple(details)
+
+# def _get_attribute_basic_info(context: ObjectContextData, attr_name: str) -> Tuple[
+#         StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...]]:
+#     """
+#     Collect basic information about an attribute that does not require much in the way of
+#     conditional logic.
+
+#     Args:
+#         context (ObjectContextData): The context (with object) whose attribute is being inspected.
+#         attr_name (str): The name of the attribute.
+
+#     Returns: A tuple containing information collected about an attribute.
+#         Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...]]
+#         - The first 4 fields of AttributeProfile
+#     """
+
+def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str, AttributeProfile]:
     """
     Calculate the profile for an attribute of an object, handling errors gracefully.
 
@@ -658,10 +819,14 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
         attr_name (str): The name of the attribute.
 
     Returns:
-        Tuple[str, tuple]: A tuple containing the name of the attribute, plus information
+        Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
             collected about it, or a tuple containing error information if an error occurred.
     """
-    recognized = False
+    # _get_attribute_basic_info(context, attr_name)
+    if context.mode == 'key_value':
+        return _key_value_info(context, attr_name)
+    if context.mode != 'generic':
+        raise ValueError(f'Unhandled {context.mode = }')
     attr_annotation = get_annotation_info(
         context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION)
     try:
@@ -672,14 +837,14 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
     except Exception as e:  # pylint:disable=broad-exception-caught
         logging.error('Unexpected error accessing "%s": %s', attr_name, e)
         return (attr_name, attr_annotation, ApplicationFlagError(type(e).__name__))
-    # details = [context]
+    # Collect common information with a bunch of different endings depending on context
     details = []
-    # details = [attr_annotation]
     details.append(attr_annotation)
     attr_tags = get_tag_set(attribute)
     details.append(type(attribute).__name__)
     details.append(get_attribute_source(attribute))
     details.append(attr_tags)
+    recognized = False
     if not attr_tags:
         recognized = True
         details.append(details_without_tags(context.element, attr_name, attribute))
@@ -688,9 +853,6 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
         if InspectIs.BUILTIN in attr_tags:
             recognized = True
             details.append((InspectIs.BUILTIN, SentinelTag(Tag.BUILTIN_EXCLUDE)))
-        # elif InspectIs.METHODDESCRIPTOR in attr_tags:
-        #     recognized = True
-        #     details.append((InspectIs.METHODDESCRIPTOR, get_signature(attribute)))
         elif InspectIs.ROUTINE in attr_tags:
             recognized = True
             details.append((InspectIs.ROUTINE, get_signature(attribute)))
@@ -707,7 +869,11 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
             if attr_name == '__class__':
                 details.append((ProfileConstant.DUNDER, SentinelTag(Tag.SELF_NO_EXPAND)))
             else:
-                details.append((ProfileConstant.A_CLASS, SentinelTag(Tag.OTHER_EXPAND)))
+                if isinstance(attribute, type) and issubclass(attribute, tuple) and \
+                        hasattr(attribute, '_fields'):
+                    details.append(namedtuple_fields(attribute))
+                else:
+                    details.append((ProfileConstant.A_CLASS, SentinelTag(Tag.OTHER_EXPAND)))
         elif InspectIs.DATADESCRIPTOR in attr_tags or InspectIs.GETSETDESCRIPTOR in attr_tags:
             recognized = True
             details.append((InspectIs.DATADESCRIPTOR, SentinelTag(Tag.OTHER_EXPAND)))
@@ -717,7 +883,7 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[
     return (attr_name, tuple(details))
 
 # pylint:disable=line-too-long
-# cSpell:words dunder, inspectable, levelname, typehints, getsourcefile
+# cSpell:words dunder, inspectable, levelname, typehints, getsourcefile, adafruit
 # cSpell:words asyncgen, asyncgenfunction, coroutinefunction, datadescriptor, generatorfunction, getsetdescriptor, memberdescriptor, methoddescriptor, methodwrapper
-# cSpell:ignore prfx
+# cSpell:ignore prfx getset
 # cSpell:allowCompoundWords true
