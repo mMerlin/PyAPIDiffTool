@@ -5,7 +5,7 @@
 # pylint:disable=too-many-lines
 
 import types
-from typing import Iterable, Tuple, Hashable, Union, Dict, FrozenSet
+from typing import Iterable, Tuple, Hashable, Union, Dict, Set, FrozenSet
 from collections import namedtuple
 from dataclasses import dataclass
 # import inspect
@@ -88,25 +88,68 @@ class Key:
     SIG_RETURN: int = 1
     SIG_DOC: int = 2
 
-@dataclass(frozen=True)
-class Cfg:
+class CfgMeta(type):
+    """Override attribute setting to convert comma delimited str to Set[str]"""
+    def __setattr__(cls, attr_name: str, value: str):
+        # Dynamically create and update class attributes
+        if not isinstance(value, types.FunctionType):
+            if isinstance(value, str):
+                value = set(value.split(','))
+            super().__setattr__(attr_name, value)
+
+# @dataclass(frozen=True)
+@dataclass
+class Cfg(metaclass=CfgMeta):  # pylint:disable=too-many-instance-attributes
     """
     Constants for configuration settings lookup
     """
     profile_scope: str = 'scope of attributes'
+    ignore_docstring: str = 'docstring differences to ignore'
+    ignore_annotation: str = 'annotation differences to ignore'
+    ignore_attribute: str = 'attribute names to always ignore'
+    ignore_mod_attribute: str = 'module attribute names to ignore'
+    ignore_cls_attribute: str = 'class attribute names to ignore'
+    report_matched: str = 'include attribute differences'
     report_exact: str = 'report exact matches'
-    ignore_differences: str = 'ignore specified differences'
+    report_not_implemented: str = 'include not implemented in port'
+    report_extension: str = 'include extension in port'
+    report_skipped: str = 'include skipped attributes'
+
     all_scope: str = 'all'
-    published_scope: str = 'published'
     public_scope: str = 'public'
+    published_scope: str = 'published'
+    ignore: str = 'ignore'
+    docstring: str = 'docstring'
+    all_context: str = 'all'
+    annotation: str = 'annotation'
+    attribute: str = 'attribute'
+    global_context: str = 'global'
+    module_context: str = 'module'
+    class_context: str = 'class'
+    report: str = 'report'
+    matched_differences: str = 'differences in matched'
+    exact: str = 'exact matches'
+    not_in_port: str = 'not implemented in port'
+    port_extension: str = 'not implemented in port'
+    skipped_attribute: str = 'skipped in either implementation'
+    good_docstring: set = ''
+    good_annotation: set = ''
+
+    ignore_differences: str = 'ignore specified differences'
 
 @dataclass(frozen=True)
 class Ignore:
     """
     Constants for reportable items to suppress
     """
-    docstring: str = 'docstring'
-    scope_annotation: str = 'scope level annotation'
+    module_context: str = 'module'
+    class_context: str = 'class'
+    method_context: str = 'method'  # includes functions
+    parameter_context: str = 'parameter'
+    return_context: str = 'return'
+    scope_context: str = 'scope'
+
+    # docstring: str = 'docstring'
 
 @dataclass(frozen=True)
 class Match:
@@ -151,7 +194,7 @@ class ProfilePrototype:
         """
         self._base_module = module_base_name
         self._port_module = module_port_name
-        self._configuration_settings: Dict[str, str] = {}  # Configuration settings
+        self._configuration_settings: Dict[str, Union[str, Dict[str, Union[bool, Set[str]]]]] = {}
         self.load_configuration()  # Loads configuration settings
         self._reports: Dict[str, logging.Logger] = {}
         self._reports[Key.REPORT_NOT_IMPLEMENTED] = self.create_logger(Key.REPORT_NOT_IMPLEMENTED)
@@ -211,40 +254,124 @@ class ProfilePrototype:
         return existing_logger
 
     def load_configuration(self) -> None:
-        """Loads configuration settings.
+        """
+        Loads configuration settings.
 
         Simulate getting application specific configuration data from external sources
         - user and project configuration files
         - command line arguments
+
+        Leave the simulated argument lookups as literals
+        Use Cfg constants for configuration keys
         """
         # populate builtin default configuration
         self._configuration_settings = {
-            'strictness': {
-                'ignore_docstrings': (),  # module, class, method
-                'ignore_added_annotations': (),  # parameter, return, scope
-                'ignore_attributes': {
-                    'global': (),
-                    'module': (),
-                    'class': (),
+            Cfg.profile_scope: Cfg.all_scope,  # or 'public', 'published'
+            Cfg.ignore: {
+                Cfg.docstring: set(),  # module, class, method
+                Cfg.annotation: set(),  # parameter, return, scope
+                Cfg.attribute: {
+                    Cfg.global_context: set(),
+                    Cfg.module_context: {'__builtins__', '__cached__', '__file__', '__package__'},
+                    Cfg.class_context: set(),
                     # Additional contexts as needed
                 },
             },
-            'report': {
-                'difference_in_matched': True,
-                'exact_match': True,
-                'not_implemented_in_port': True,
-                'extension_in_port': True,
+            Cfg.report: {
+                Cfg.matched_differences: True,
+                Cfg.exact: False,
+                Cfg.not_in_port: True,
+                Cfg.port_extension: True,
+                Cfg.skipped_attribute: False,
             },
-            Cfg.profile_scope: Cfg.all_scope,  # or 'public', 'published'
         }
-        # attr_scope = getattr(module, 'ATTR_SCOPE', 'all')
-        # self._configuration_settings[Cfg.profile_scope] = getattr(module, 'ATTR_SCOPE', 'all')
-        # module level variables
-        self._configuration_settings[Cfg.ignore_differences] = set()
-        self._configuration_settings[Cfg.profile_scope] = ATTR_SCOPE
-        self._configuration_settings[Cfg.report_exact] = REPORT_EXACT_MATCH
-        if IGNORE_DOCSTRING_DIFFERENCES:
-            self._configuration_settings[Cfg.ignore_differences].add(Ignore.docstring)
+        Cfg.good_docstring = \
+            f'{Ignore.module_context},{Ignore.class_context},{Ignore.method_context}'
+        Cfg.good_annotation = \
+            f'{Ignore.parameter_context},{Ignore.return_context},{Ignore.scope_context}'
+
+        # get from module level variables
+        if 'ATTRIBUTE_SCOPE' in globals():
+            cfg_value = globals().get('ATTRIBUTE_SCOPE')
+            assert cfg_value in (Cfg.all_scope, Cfg.public_scope, Cfg.published_scope), \
+                f'Bad attribute scope {repr(cfg_value)} specified'
+            self._configuration_settings[Cfg.profile_scope] = cfg_value
+        self._bool_config_attribute('REPORT_EXACT_MATCH', Cfg.exact)
+        self._bool_config_attribute('REPORT_MATCHED', Cfg.matched_differences)
+        self._bool_config_attribute('REPORT_NOT_IMPLEMENTED', Cfg.not_in_port)
+        self._bool_config_attribute('REPORT_EXTENSION', Cfg.port_extension)
+        self._bool_config_attribute('REPORT_SKIPPED', Cfg.skipped_attribute)
+        if 'NO_IGNORE_ATTRIBUTES' in globals():
+            cfg_value = globals().get('NO_IGNORE_ATTRIBUTES')
+            assert isinstance(cfg_value, bool), 'Bad no ignore attributes flag ' \
+                f'{type(cfg_value).__name__} "{repr(cfg_value)}" specified'
+            if cfg_value:
+                self._configuration_settings[Cfg.ignore][Cfg.attribute] = {key: set() \
+                    for key in self._configuration_settings[Cfg.ignore][Cfg.attribute].keys()}
+        self._attribute_name_set('IGNORE_MODULE_ATTRIBUTES', Cfg.module_context)
+        self._attribute_name_set('IGNORE_ATTRIBUTES', Cfg.global_context)
+        self._attribute_name_set('IGNORE_CLASS_ATTRIBUTES', Cfg.class_context)
+        self._ignore_difference('IGNORE_DOCSTRING', Cfg.docstring)
+        self._ignore_difference('IGNORE_ADDED_ANNOTATION', Cfg.annotation)
+
+    def _ignore_difference(self, glb_attr: str, target_attr: str) -> None:
+        """
+        Update contexts to ignore some types of differences
+
+        Args:
+            glb_attr (str): The name of the global (module) attribute to get configuration
+                information from (when it exists)
+            target_attr (str): The attribute configuration entry to update
+        """
+        if glb_attr in globals():
+            cfg_value = globals().get(glb_attr)
+            if isinstance(cfg_value, str):  # convert single str to tuple of str
+                cfg_value = (cfg_value,)
+            good_set = getattr(Cfg, f'good_{target_attr}', None)
+            assert good_set is not None and \
+                isinstance(cfg_value, tuple) and \
+                (cfg_value == (Cfg.all_context,) or
+                 all(ele in good_set for ele in cfg_value)), \
+                f'Bad ignore {target_attr} differences context value {type(cfg_value).__name__}' + \
+                f' {repr(cfg_value)}'
+            if cfg_value == (Cfg.all_context,):
+                self._configuration_settings[Cfg.ignore][target_attr].update(good_set)
+            else:
+                self._configuration_settings[Cfg.ignore][Cfg.annotation].update(cfg_value)
+
+    def _bool_config_attribute(self, glb_attr: str, target_attr: str) -> None:
+        """
+        Set a boolean configuration value, if it has been defined
+
+        Args:
+            glb_attr (str): The name of the global (module) attribute to get configuration
+                information from (when it exists)
+            target_attr (str): The attribute configuration entry to update
+        """
+        if glb_attr in globals():
+            cfg_value = globals().get(glb_attr)
+            assert isinstance(cfg_value, bool), \
+                f'Bad {target_attr} boolean flag ' + \
+                f'{type(cfg_value).__name__} {repr(cfg_value)}'
+            self._configuration_settings[Cfg.report][target_attr] = cfg_value
+
+    def _attribute_name_set(self, glb_attr: str, target_attr: str) -> None:
+        """
+        Update an attribute name set configuration setting, if it has been defined
+
+        Args:
+            glb_attr (str): The name of the global (module) attribute to get configuration
+                information from (when it exists)
+            target_attr (str): The attribute configuration entry to update
+        """
+        if glb_attr in globals():
+            cfg_value = globals().get(glb_attr)
+            if isinstance(cfg_value, str):  # convert single str to tuple of str
+                cfg_value = (cfg_value,)
+            assert isinstance(cfg_value, tuple) and all(_is_attr_name(ele) for ele in cfg_value), \
+                f'Bad {target_attr} attributes to ignore ' + \
+                f'{type(cfg_value).__name__} {repr(cfg_value)}'
+            self._configuration_settings[Cfg.ignore][Cfg.attribute][target_attr].update(cfg_value)
 
     def get_configuration(self, key: str) -> Union[bool, str, set]:
         """
@@ -259,8 +386,30 @@ class ProfilePrototype:
         Raises
             KeyError if no configuration has been set for the requested key
         """
-        # if key == Cfg.profile_scope:
-        return self._configuration_settings[key]
+        setting = None
+        if key == Cfg.ignore_docstring:
+            setting = self._configuration_settings[Cfg.ignore][Cfg.docstring]
+        elif key == Cfg.ignore_annotation:
+            setting = self._configuration_settings[Cfg.ignore][Cfg.annotation]
+        elif key == Cfg.ignore_attribute:
+            setting = self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.global_context]
+        elif key == Cfg.ignore_mod_attribute:
+            setting = self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.module_context]
+        elif key == Cfg.ignore_cls_attribute:
+            setting = self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.class_context]
+        elif key == Cfg.report_exact:
+            setting = self._configuration_settings[Cfg.report][Cfg.exact]
+        elif key == Cfg.report_matched:
+            setting = self._configuration_settings[Cfg.report][Cfg.matched_differences]
+        elif key == Cfg.report_not_implemented:
+            setting = self._configuration_settings[Cfg.report][Cfg.not_in_port]
+        elif key == Cfg.report_extension:
+            setting = self._configuration_settings[Cfg.report][Cfg.port_extension]
+        elif key == Cfg.report_skipped:
+            setting = self._configuration_settings[Cfg.report][Cfg.skipped_attribute]
+        else:
+            setting = self._configuration_settings[key]
+        return setting
 
     def iterate_object_attributes(self, impl_source: str,
                                   context: ObjectContextData) -> Iterable[Tuple[str, Tuple]]:
@@ -302,14 +451,14 @@ class ProfilePrototype:
         #     # for namedtuple element only look at the attributes specified in _fields
         #     attr_scope = 'published'
         #     # handled as a Data:Leaf at the parent level
-        if context.mode in ('sequence', 'key_value'):
+        if context.mode in (PrfC.SEQUENCE_MODE, PrfC.KEY_VALUE_MODE):
             # for sequence and dict type elements only look at the the contained elements
-            attr_scope = 'published'
+            attr_scope = Cfg.published_scope
         attr_names = {
-            'all': context.all,
-            'published': context.published \
+            Cfg.all_scope: context.all,
+            Cfg.published_scope: context.published \
                 if context.published else context.public,
-            'public': context.public
+            Cfg.public_scope: context.public
         }.get(attr_scope, context.all)
         rpt_target = self._reports[Key.REPORT_ATTRIBUTE_SKIPPED]
 
@@ -328,7 +477,7 @@ class ProfilePrototype:
                 rpt_target.error(f'**** Error accessing {context.path} "{name}" attribute: ' +
                     f'{result}')
                 context.skipped += 1
-                print(f'{result[Key.INFO_NAME]} {context.path} skipped')  # TRACE
+                # print(f'{result[Key.INFO_NAME]} {context.path} skipped')  # TRACE
                 continue
             if self.filter_by_source(context, name, result):
                 continue
@@ -416,7 +565,7 @@ class ProfilePrototype:
             assert result is SentinelTag('Exclude by name')
         rpt_target.info(f'{context.path} '
                         f'{result}')
-        print(f'{result[Key.INFO_NAME]} {context.path} skipped')  # TRACE
+        # print(f'{result[Key.INFO_NAME]} {context.path} skipped')  # TRACE
         context.skipped += 1
 
     def process_expand_queue(self) -> None:
@@ -441,20 +590,20 @@ class ProfilePrototype:
             while compare_base < self.HIGH_VALUES or compare_port < self.HIGH_VALUES:
                 # print(min(compare_base, compare_port))
                 if compare_base == compare_port:
-                    print(f'{compare_base} both')  # TRACE
+                    # print(f'{compare_base} both')  # TRACE
                     match_count += 1
                     self.handle_matched_attribute(match_pair, compare_base[Key.COMPARE_NAME],
                                                   profile_base, profile_port)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                     compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
                 elif compare_base < compare_port:
-                    print(f'{compare_base} {que_ent.base_path} not implemented')  # TRACE
+                    # print(f'{compare_base} {que_ent.base_path} not implemented')  # TRACE
                     not_impl_count += 1
                     self.handle_unmatched_attribute(match_pair, 'base',
                         compare_base[Key.COMPARE_NAME], profile_base)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                 else: # compare_base > compare_port
-                    print(f'{compare_port} {que_ent.port_path} extension')  # TRACE
+                    # print(f'{compare_port} {que_ent.port_path} extension')  # TRACE
                     extension_count += 1
                     self.handle_unmatched_attribute(match_pair, 'port',
                         compare_port[Key.COMPARE_NAME], profile_port)
@@ -567,7 +716,8 @@ class ProfilePrototype:
             rpt_target.info(f'    {port_category}')
             return True
         if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_LEAF):
-            if base_category[Key.DETAIL_CONTENT] == port_category[Key.DETAIL_CONTENT]:
+            if base_category[Key.DETAIL_CONTENT] == port_category[Key.DETAIL_CONTENT] or \
+                    self._is_ignored_docstring(name, context):
                 if not self._shared[Key.HDR_SENT_DIF]:  # Exact match
                     if self.get_configuration(Cfg.report_exact):
                         rpt_target.info(
@@ -584,6 +734,28 @@ class ProfilePrototype:
             rpt_target.info(f'    port content = {port_category[Key.DETAIL_CONTENT]:.50}')
             return True
         return False
+
+    def _is_ignored_docstring(self, name: str, context: MatchPair) -> bool:
+        """
+        check if the attribute is a docstring that is to be ignored (for differences)
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+        """
+        return (
+            name == '__doc__' and
+            # context.base.mode == PrfC:MODULE_MODE and
+            (isinstance(context.base.element, types.ModuleType) and
+             Ignore.module_context in self.get_configuration(Cfg.ignore_docstring)) or
+            # context.base.mode == PrfC:CLASS_MODE and
+            ((isinstance(context.base.element, type) or
+              repr(type(context.base.element)).startswith('<class ') or
+              context.base.mode == PrfC.KEY_VALUE_MODE) and
+             Ignore.class_context in self.get_configuration(Cfg.ignore_docstring)) or
+            (isinstance(context.base.element, types.FunctionType) and
+             Ignore.method_context in self.get_configuration(Cfg.ignore_docstring))
+        )
 
     def _handle_str_category(self, name: str, context: MatchPair, base_category: Tuple,
                              port_category: Tuple) -> None:
@@ -729,16 +901,17 @@ class ProfilePrototype:
                              f'but not base: {port_det}')
             port_det = next(port_iter, self.END_DETAIL)
 
-        if base_sig[Key.SIG_RETURN] != port_sig[Key.SIG_RETURN]:
-            if Ignore.scope_annotation not in self.get_configuration(Cfg.ignore_differences):
-                self.send_match_sig_header(name, context)
-                destination.info('    routine return annotation: base '
-                    f'{_no_return_annotation(base_sig)}; port {_no_return_annotation(port_sig)}')
-        if base_sig[Key.SIG_DOC] != port_sig[Key.SIG_DOC]:
-            if Ignore.docstring not in self.get_configuration(Cfg.ignore_differences):
-                self.send_match_sig_header(name, context)
-                destination.info(f'    routine docstring: base ¦{base_sig[Key.SIG_DOC]}¦; ' +
-                                 f'port ¦{port_sig[Key.SIG_DOC]}¦')
+        if base_sig[Key.SIG_RETURN] != port_sig[Key.SIG_RETURN] and \
+                base_sig[Key.SIG_RETURN] is SentinelTag(Tag.NO_RETURN_ANNOTATION) and \
+                Ignore.return_context not in self.get_configuration(Cfg.ignore_annotation):
+            self.send_match_sig_header(name, context)
+            destination.info('    routine return annotation: base '
+                f'{_no_return_annotation(base_sig)}; port {_no_return_annotation(port_sig)}')
+        if base_sig[Key.SIG_DOC] != port_sig[Key.SIG_DOC] and \
+                Ignore.method_context not in self.get_configuration(Cfg.ignore_docstring):
+            self.send_match_sig_header(name, context)
+            destination.info(f'    routine docstring: base ¦{base_sig[Key.SIG_DOC]}¦; ' +
+                             f'port ¦{port_sig[Key.SIG_DOC]}¦')
 
     def _handle_matched_parameters(self, name: str, context: MatchPair, param_type: str,
             base_det: ParameterDetail, port_det: ParameterDetail) -> None:
@@ -761,7 +934,9 @@ class ProfilePrototype:
             self.send_match_sig_header(name, context)
             destination.info(f'{self._param_prefix(param_type)} kind: ' +
                 f'base "{base_det.kind}"; port "{port_det.kind}"')
-        if base_det.annotation != port_det.annotation:
+        if base_det.annotation != port_det.annotation and \
+                base_det.annotation is SentinelTag(Tag.NO_PARAMETER_ANNOTATION) and \
+                Ignore.parameter_context not in self.get_configuration(Cfg.ignore_annotation):
             self.send_match_sig_header(name, context)
             # pylint:disable=line-too-long
             destination.info(f'{self._param_prefix(param_type)} annotation: ' +
@@ -791,8 +966,15 @@ class ProfilePrototype:
         """
         impl_context = getattr(context, base_or_port)
         validate_profile_data(name, impl_context, profile)
+        # if base_or_port == 'base':
+        #     rpt_key = Key.REPORT_NOT_IMPLEMENTED
+        #     context_path = context.base.path
+        # else:
+        #     rpt_key = Key.REPORT_EXTENSION
+        #     context_path = context.port.path
         rpt_key = Key.REPORT_NOT_IMPLEMENTED if base_or_port == 'base' else Key.REPORT_EXTENSION
         rpt_target = self._reports[rpt_key]
+        context_path = context.base.path if base_or_port == 'base' else context.port.path
         if report_profile_data_exceptions(rpt_target, name, profile):
             return
 
@@ -801,19 +983,19 @@ class ProfilePrototype:
             sig = profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]
             if not (isinstance(sig, tuple) and len(sig) == Key.SIG_ELEMENTS
                     and isinstance(sig[Key.SIG_PARAMETERS], tuple)):
-                rpt_target.error(f'**** {type(sig).__name__ = } {len(sig) = } ' +
+                rpt_target.error(f'****1 {context_path} {type(sig).__name__ = } {len(sig) = } ' +
                     f'{type(sig[Key.SIG_PARAMETERS]).__name__ = } ' +
                     f'{type(sig[Key.SIG_RETURN]).__name__ = } ****')
                 return
-            rpt_target.info(f'{name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
+            rpt_target.info(f'{context_path}, {name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
                 f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
                 f'{profile[Key.PROFILE_TAGS]}, {len(sig[Key.SIG_PARAMETERS])}')
-            for field in sig[Key.SIG_PARAMETERS]:
-                assert isinstance(field, ParameterDetail), f'{type(field) = }¦{sig =}'
-                rpt_target.info(f'    {field}')
+            for fld in sig[Key.SIG_PARAMETERS]:
+                assert isinstance(fld, ParameterDetail), f'{type(fld) = }¦{sig =}'
+                rpt_target.info(f'    {fld}')
             rpt_target.info(f'    {sig[Key.SIG_RETURN]}')
         else:
-            rpt_target.info(f'{name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
+            rpt_target.info(f'{context_path}, {name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
                 f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
                 f'{profile[Key.PROFILE_TAGS]},')
             rpt_target.info(f'    {profile[Key.PROFILE_DETAIL]}')
@@ -835,21 +1017,27 @@ class ProfilePrototype:
 
     def report_match_details(self) -> None:
         """Generate the report(s) for the module comparison"""
-        print(f'\nMatched in "{self._base_module}" base and "{self._port_module}"'
-              ' port implementations.')
-        self.report_section_details(Key.REPORT_MATCHED_ATTRIBUTE)
+        if self.get_configuration(Cfg.report_matched):
+            print(f'\nMatched in "{self._base_module}" base and "{self._port_module}"'
+                ' port implementations.')
+            self.report_section_details(Key.REPORT_MATCHED_ATTRIBUTE)
 
-        print(f'\nNot Implemented in "{self._port_module}" port implementation.')
-        print('Attribute, Base Annotation, Type, Source, "is" Tags, Count, Details¦Fields')
-        self.report_section_details(Key.REPORT_NOT_IMPLEMENTED)
+        if self.get_configuration(Cfg.report_not_implemented):
+            print(f'\nNot Implemented in "{self._port_module}" port implementation.')
+            print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
+                  'Details¦Fields')
+            self.report_section_details(Key.REPORT_NOT_IMPLEMENTED)
 
-        print(f'\nExtensions in the "{self._port_module}" port implementation.')
-        print('Attribute, Base Annotation, Type, Source, "is" Tags, Count, Details¦Fields')
-        self.report_section_details(Key.REPORT_EXTENSION)
+        if self.get_configuration(Cfg.report_extension):
+            print(f'\nExtensions in the "{self._port_module}" port implementation.')
+            print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
+                  'Details¦Fields')
+            self.report_section_details(Key.REPORT_EXTENSION)
 
-        print('\nSkipped attributes for '
-              f'"{self._base_module}" (base) and "{self._port_module}" (port)')
-        self.report_section_details(Key.REPORT_ATTRIBUTE_SKIPPED)
+        if self.get_configuration(Cfg.report_skipped):
+            print('\nSkipped attributes for '
+                f'"{self._base_module}" (base) and "{self._port_module}" (port)')
+            self.report_section_details(Key.REPORT_ATTRIBUTE_SKIPPED)
 
     def report_section_details(self, section: str) -> None:
         """
@@ -888,6 +1076,22 @@ class ProfilePrototype:
         if not self._shared[Key.HDR_SENT_SIG]:
             target.info('  Method Parameters:')
             self._shared[Key.HDR_SENT_SIG] = True
+
+def _is_attr_name(name: str) -> bool:
+    """
+    Check if a given name is a valid Python attribute name.
+
+    Args:
+        name: the string to check
+
+    Returns True if the name is valid to use as a python attribute name, False otherwise
+    """
+    return (
+        isinstance(name, str) and
+        len(name) > 0 and
+        (not name[0].isdigit()) and
+        all(char.isalnum() or char == '_' for char in name)
+    )
 
 def pretty_annotation(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
@@ -1009,8 +1213,8 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
             f'¦{implementation.path}{name}¦{profile}'
         assert profile[Key.PROFILE_TAGS] == (), \
             f'{profile[Key.PROFILE_TAGS] = } ¦{implementation.path}¦{name}¦{profile}'
-        if profile[Key.PROFILE_TYPE] not in ('list', 'dict'):
-            print(f'**** {implementation.path} {name = }, {profile} ****')
+        if profile[Key.PROFILE_TYPE] not in ('list', 'dict', 'mappingproxy'):
+            print(f'****2 {implementation.path} {name = }, {profile} ****')
 
 def report_profile_data_exceptions(destination: logging.Logger, name: str,
                                    profile_data: Tuple) -> bool:
@@ -1029,48 +1233,49 @@ def report_profile_data_exceptions(destination: logging.Logger, name: str,
     """
     details_count = len(profile_data)
     if details_count != Key.PROFILE_ELEMENTS:
-        destination.error(f'**** {details_count =} ¦ {name}¦{profile_data} ****')
+        destination.error(f'****4 {details_count =} ¦ {name}¦{profile_data} ****')
         return True
     if not isinstance(profile_data[Key.PROFILE_DETAIL], tuple):
         destination.error(
-            f'**** {type(profile_data[Key.PROFILE_DETAIL]).__name__ =} ¦ {name}¦{profile_data} '
+            f'****5 {type(profile_data[Key.PROFILE_DETAIL]).__name__ =} ¦ {name}¦{profile_data} '
             '****')
         return True
     if len(profile_data[Key.PROFILE_DETAIL]) != Key.DETAIL_ELEMENTS:
         destination.error(
-            f'**** {len(profile_data[Key.PROFILE_DETAIL]) =} ¦ {name}¦{profile_data} ****')
+            f'****6 {len(profile_data[Key.PROFILE_DETAIL]) =} ¦ {name}¦{profile_data} ****')
         return True
     return False
 
 # Demonstration with sample case
 # Simulated command line options. Real command line args are order dependant. For simulation
 # purposes, that is being ignored
-# ATTRIBUTE-SCOPE = 'all'  # 'all', 'public', 'published'
-    # --attribute-scope       Scope of attributes to compare («all», public, published).
-
-ATTR_SCOPE = 'all'
-REPORT_EXACT_MATCH = True
-IGNORE_DOCSTRING_DIFFERENCES = True
-# Ignore port Annotation when not defined in base
-IGNORE_ADDED_ANNOTATION_ALL = False
-IGNORE_ADDED_ANNOTATION_PARAM = False
-IGNORE_ADDED_ANNOTATION_RETURN = False
-IGNORE_ADDED_ANNOTATION_SCOPE = False
-IGNORE_ATTRIBUTES = ('__cached__', '__file__', '__package__')
-# pylint:disable=line-too-long
-# categorize attribute ignores: top (module), all, class, other
-# StrictAnnotation
-# --ignore-docstrings           Ignore differences in docstring content.
-# --ignore-added-annotations    Ignore cases where the base did not specify any annotation, but the port did.
-# --separate-annotations        Handle annotation change filters separately for parameters, return values, and parent scope.
-# --ignore-attributes GLOBAL    Comma-separated list of attributes to globally ignore.
-# --ignore-module-attributes    Comma-separated list of attributes to ignore in module context.
-# --ignore-class-attributes     Comma-separated list of attributes to ignore in class context.
-# --report-matched              Generate report for differences in matched attributes.
-# --report-not-implemented      Generate report for attributes not implemented in the port.
-# --report-extensions           Generate report for extensions implemented in the port.
-# --attribute-scope SCOPE       Scope of attributes to compare (all, public, published).
-# --ignore-exact-match          Do not report attributes with exact matches.
+# ATTRIBUTE_SCOPE = 'public'  # 'all', 'public', 'published'
+    # --attribute-scope             Scope of attributes to compare («all», public, published).
+# REPORT_EXACT_MATCH = True
+    # --report-exact-match          Include attributes with exact matches in report.
+# NO_IGNORE_ATTRIBUTES = True  # default False
+    # --no-ignore-attributes        Do not filter out the default attribute name set
+# IGNORE_MODULE_ATTRIBUTES = ('__cached__', '__file__', '__package__')
+    # --ignore-module-attributes    Comma-separated list of attributes to ignore in module context.
+# IGNORE_ATTRIBUTES = '__very_special__'
+    # --ignore-attributes           Comma-separated list of attributes to globally ignore.
+# IGNORE_CLASS_ATTRIBUTES = ('__module__', 'TEst')
+    # --ignore-class-attributes     Comma-separated list of attributes to ignore in class context.
+IGNORE_DOCSTRING = 'all'  # 'all', 'module', 'class', 'method'
+    # --ignore-docstring            Comma-separated list of contexts to ignore docstring changes in.
+    #                               all, module, class, method
+IGNORE_ADDED_ANNOTATION = 'all'  # 'all', 'parameter', 'return', 'scope'
+    # --ignore-added-annotations    Comma-separated list of contexts Ignore cases where the base did
+    #                               not specify any annotation, but the port did.
+REPORT_MATCHED = True  # default: True
+    # --report-matched              Generate report for differences in matched attributes.
+REPORT_NOT_IMPLEMENTED = False  # default: True
+    # --report-not-implemented      Generate report for attributes not implemented in the port.
+REPORT_EXTENSION = False  # default: True
+    # --report-extensions           Generate report for extensions implemented in the port.
+REPORT_SKIPPED = False  # default: False
+    # --report-skipped              Generate report for attributes that were skipped in either
+    #                               implementation.
 
 if __name__ == '__main__':
     cmp = ProfilePrototype('logging', 'lib.adafruit_logging')

@@ -181,6 +181,9 @@ class ProfileConstant:
     # SOMETHING_ELSE: str = 'something else to be handled'
     EXTERN_MODULE: str = 'external.module'
     PKG_CLS_INST: str = 'package.class.instance'
+    GENERIC_MODE: str = 'generic'
+    SEQUENCE_MODE: str = 'sequence'  # list, tuple, set, …
+    KEY_VALUE_MODE: str = 'key_value'  # dict, mappingproxy
 
 @dataclass(frozen=True)
 class InspectIs:
@@ -223,7 +226,7 @@ class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     """the actual object"""
     source: str = None
     """the source file for the object (definition)"""
-    mode: str = 'generic'
+    mode: str = ProfileConstant.GENERIC_MODE
     """hint for how to profile attributes"""
     module: types.ModuleType = None
     """the module that element is (or is contained in)"""
@@ -358,11 +361,11 @@ def populate_object_context(context: ObjectContextData) -> None:
         if isinstance(ele, Sequence):
             assert isinstance(ele, (list, tuple, set)), \
                 f'Only a subset of Sequence types expected: not {type(ele)}'
-            context.mode = 'sequence'
+            context.mode = ProfileConstant.SEQUENCE_MODE
             # context.published = tuple(f'index_{i}' for i in range(len(ele) + 1))
             context.published = tuple(range(len(ele)))
         elif isinstance(ele, (dict, types.MappingProxyType)):
-            context.mode = 'key_value'
+            context.mode = ProfileConstant.KEY_VALUE_MODE
             context.published = tuple((i, key) for i, key in enumerate(ele.keys()))
         # elif isinstance(ele, type) and issubclass(ele, tuple) and hasattr(ele, '_fields'):
         #     context.mode = 'namedtuple'
@@ -776,7 +779,7 @@ def _key_value_info(context: ObjectContextData, attr_name: str) -> Tuple[str, At
         Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
             collected about it, or a tuple containing error information if an error occurred.
     """
-    assert context.mode == 'key_value', \
+    assert context.mode == ProfileConstant.KEY_VALUE_MODE, \
         f'only handle key_value context attributes: {context.mode = }'
     assert isinstance(context.element, (dict, types.MappingProxyType)), \
         f'cannot process {type(context.element).__name__} in a key_value context'
@@ -795,21 +798,6 @@ def _key_value_info(context: ObjectContextData, attr_name: str) -> Tuple[str, At
     details.append(get_value_information(attribute))
     return attr_name, tuple(details)
 
-# def _get_attribute_basic_info(context: ObjectContextData, attr_name: str) -> Tuple[
-#         StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...]]:
-#     """
-#     Collect basic information about an attribute that does not require much in the way of
-#     conditional logic.
-
-#     Args:
-#         context (ObjectContextData): The context (with object) whose attribute is being inspected.
-#         attr_name (str): The name of the attribute.
-
-#     Returns: A tuple containing information collected about an attribute.
-#         Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...]]
-#         - The first 4 fields of AttributeProfile
-#     """
-
 def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str, AttributeProfile]:
     """
     Calculate the profile for an attribute of an object, handling errors gracefully.
@@ -822,10 +810,9 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
         Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
             collected about it, or a tuple containing error information if an error occurred.
     """
-    # _get_attribute_basic_info(context, attr_name)
-    if context.mode == 'key_value':
+    if context.mode == ProfileConstant.KEY_VALUE_MODE:
         return _key_value_info(context, attr_name)
-    if context.mode != 'generic':
+    if context.mode != ProfileConstant.GENERIC_MODE:
         raise ValueError(f'Unhandled {context.mode = }')
     attr_annotation = get_annotation_info(
         context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION)
