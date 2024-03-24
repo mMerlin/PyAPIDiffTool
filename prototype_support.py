@@ -10,16 +10,17 @@ import types
 import enum
 from typing import (Callable, Tuple, Union, Hashable, Mapping, Sequence, NoReturn,
     get_type_hints,
-    Any, Set, FrozenSet,
+    Any, List,
 )
 from collections import namedtuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import inspect
 import decimal
 import fractions
 import logging
 
 ParameterDetail = namedtuple('ParameterDetail', ['name', 'kind', 'annotation', 'default'])
+"""Details collected about a function or method parameter"""
 
 class ApplicationRootError(BaseException):
     """Application specific Exception type. (to be) Part of Exception handling framework"""
@@ -38,7 +39,7 @@ class ApplicationLogicError(ApplicationRootError):
 
 class SentinelTag:
     """
-    Creates and manages unique, immutable sentinel objects based on hashable tags.
+    Creates and manages unique and immutable sentinel objects based on hashable tags.
 
     Ensures that only one instance exists for each unique hashable tag. Instances are used
     to mark or signal specific conditions or states uniquely and immutably.
@@ -68,7 +69,7 @@ class SentinelTag:
     def __init__(self, tag: Hashable):
         """
         Initialize the SentinelTag instance. This method sets the tag, bypassing __setattr__
-        to enforce immutability.
+        to maintain immutability.
 
         Args:
             tag: The hashable tag for the sentinel.
@@ -182,6 +183,8 @@ class ProfileConstant:
     EXTERN_MODULE: str = 'external.module'
     PKG_CLS_INST: str = 'package.class.instance'
     GENERIC_MODE: str = 'generic'
+    MODULE_MODE: str = 'module'
+    CLASS_MODE: str = 'class'
     SEQUENCE_MODE: str = 'sequence'  # list, tuple, set, …
     KEY_VALUE_MODE: str = 'key_value'  # dict, mappingproxy
 
@@ -221,7 +224,7 @@ class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     Data class to hold object context (attribute name) information.
     """
     path: Tuple[str]
-    """path to object, starting at module"""
+    """path to object, normally starting at the root module"""
     element: object
     """the actual object"""
     source: str = None
@@ -237,79 +240,54 @@ class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     all: Tuple[str] = None
     """tuple(dir(obj))"""
     published: Tuple[str] = None
-    """tuple(getattr(element, '__all__', []))"""
+    """
+    tuple(getattr(element, '__all__', []))
+    tuple(getattr(element, '_fields, []))
+    tuple(element.keys()))
+    """
     public: Tuple[str] = None
     """tuple(attr for attr in all if public_attr_name(attr))"""
     skipped: int = 0
 
-# Sample data classes not currently being used. Kept to be used if needed for debugging
-@dataclass()
-class SampleData1:  # pylint:disable=too-many-instance-attributes
-    """sample attributes to test out get_value_information processing"""
-    int_attr: int = 42
-    bool_attr: bool = False
-    float_attr: float = 3.14
-    dec_attr: decimal.Decimal = decimal.Decimal('123.456')
-    fraction_attr: fractions.Fraction = fractions.Fraction(33, 3)
-    str_attr: str = "Hello, world"
-    none_str_attr: str = None
-    list_attr: list = field(default_factory=lambda: [1, 2, 3])
-    dict_attr: dict = field(default_factory=lambda: {'key': 'value'})
-    set_attr: Set = field(default_factory=lambda: {1, 2, 3})
-    frozenset_attr: FrozenSet = field(default_factory=lambda: frozenset((1, 2, 3)))
-    none_attr: None = None
-    complex_attr: complex = 1 + 2j
-
-    bytearray_attr: bytearray = field(default_factory=lambda: bytearray([65, 66, 67, 38]))
-    # custom_obj: Any = None  # Recursive attribute for demonstration
-SampleData1.custom_obj = SampleData1()
-
-@dataclass()
-class SampleData2:  # pylint:disable=too-many-instance-attributes
-    """sample attributes to test out get_value_information processing"""
-    int_attr_x: int = 42
-    bool_attr: bool = False
-    # float_attr: float = 3.14
-    dec_attr: decimal.Decimal = decimal.Decimal('123.456')
-    fraction_attr: fractions.Fraction = fractions.Fraction(33, 3)
-    str_attr: str = "Hello, world"
-    none_str_attr: str = None
-    # list_attr: list = field(default_factory=lambda: [1, 2, 3])
-    dict_attr: dict = field(default_factory=lambda: {'key': 'value'})
-    set_attr: Set = field(default_factory=lambda: {1, 2, 3})
-    frozenset_attr: FrozenSet = field(default_factory=lambda: frozenset((1, 2, 3)))
-    none_attr: None = None
-    complex_attr: complex = 1 + 2j
-
-    bytearray_attr: bytearray = field(default_factory=lambda: bytearray([65, 66, 67, 38]))
-    # custom_obj: Any = None  # Recursive attribute for demonstration
-
 class ListHandler(logging.Handler):
     """Save log records to a list"""
     def __init__(self, *args, **kwargs):
-        # super(ListHandler, self).__init__(*args, **kwargs)
         super().__init__(*args, **kwargs)
-        self.log_records = []
+        self.log_records: List[logging.LogRecord] = []
 
-    def emit(self, record) -> None:
-        """capture the log record"""
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        capture the log record
+
+        Args:
+            record (LogRecord) the standard logging.LogRecord
+        """
         self.log_records.append(record)
         return True
-    # def emit(self, record) -> None:
-    #     """capture and format the log record"""
-    #     message = record.getMessage()  # This formats the message with any args
-    #     self.log_records.append(message)
 
     def log_also_to_me(self, logger: logging.Logger) -> bool:
-        """add the list handler instance to a Logger"""
+        """
+        add the list handler instance to a Logger
+
+        Args:
+            logger (logging.Logger) a Logger instance to fully redirect to this ListHandler
+
+        Returns (bool) True if this ListHandler was added to the Logger instance, False if
+            it was already there.
+        """
         for existing_handler in logger._handlers:  # pylint:disable=protected-access
-            if existing_handler == self:
+            if existing_handler is self:
                 return False  # already there
         logger.addHandler(self)
         return True
 
     def log_only_to_me(self, logger: logging.Logger) -> None:
-        """replace all handlers of a Logger with just me"""
+        """
+        replace all handlers of a Logger with just me
+
+        Args:
+            logger (logging.Logger) a Logger instance to fully redirect to this ListHandler
+        """
         # pylint:disable=protected-access
         while logger._handlers:
             logger.removeHandler(logger._handlers[0])
@@ -319,6 +297,31 @@ class ListHandler(logging.Handler):
         """
         log record data, without timestamp, as a tuple that can be directly compared
         for unittest verification.
+
+        Excluded LogRecord fields are not as comparable. They can be different between
+        implementations, and even between runs.
+        LogRecord itself contains different fields between implementations.
+        CircuitPython uses a namedtuple instead of a class, with fields:
+            name
+            levelname
+            levelno
+            msg
+            created
+            args
+        cPython uses a class with additional fields
+            exc_info
+            exc_text
+            filename
+            funcName
+            module
+            msecs
+            pathname
+            process
+            processName
+            relativeCreated
+            stack_info
+            thread
+            threadName
 
         :return tuples containing name, levelname, levelno, msg, args
         :rtype Tuple[Tuple[str, str, int, str, tuple]]
@@ -336,14 +339,10 @@ def populate_object_context(context: ObjectContextData) -> None:
     Args:
         context (ObjectContextData): existing instance to fill in with context information
             about the element. The element field needs to be already populated. The path
-            field can be, but it is not used or updated.
-        path (tuple): The attribute names leading to the object. The root (first) element
-            is the name (path) for the module.
-            Tuple[str, ...]
-        element (object): The element to get context information for.
+            field can be, but it is not used or updated here.
 
     Output:
-        updated context
+        updated context fields
     """
     ele = context.element
     context.source = get_object_source_file(ele)
@@ -352,10 +351,10 @@ def populate_object_context(context: ObjectContextData) -> None:
         else {}
     context.all = tuple(dir(ele))
     context.published = tuple(getattr(ele, '__all__', []))
-    context.public = tuple(attr for attr in context.all if public_attr_name(attr))
+    context.public = tuple(attr for attr in context.all if is_public_attr_name(attr))
     if isinstance(ele, types.ModuleType):
         context.module = ele
-        # context.mode = 'module'
+        context.mode = ProfileConstant.MODULE_MODE
     else:
         context.module = inspect.getmodule(ele)
         if isinstance(ele, Sequence):
@@ -367,36 +366,15 @@ def populate_object_context(context: ObjectContextData) -> None:
         elif isinstance(ele, (dict, types.MappingProxyType)):
             context.mode = ProfileConstant.KEY_VALUE_MODE
             context.published = tuple((i, key) for i, key in enumerate(ele.keys()))
+        elif repr(type(ele)).startswith('<class '):
+            # Class definition or instance
+            context.mode = ProfileConstant.CLASS_MODE
+        else:
+            assert not isinstance(ele, type), f'type but not class {repr(ele)}'
         # elif isinstance(ele, type) and issubclass(ele, tuple) and hasattr(ele, '_fields'):
         #     context.mode = 'namedtuple'
         #     context.published = getattr(ele, '_fields')
         #     # handled as a Data:Leaf at the parent level
-        # elif isinstance(ele, type):
-        #     context.mode = 'class'
-
-def get_object_context_data(path: Tuple[str], element: object) -> ObjectContextData:
-    """
-    Populates and returns context data for an element in either 'base' or 'port'
-    implementation.
-
-    Args:
-        path (tuple): The attribute names leading to the object. The root (first) element
-            is the name (path) for the module.
-            Tuple[str, ...]
-        element (object): The element to get context information for.
-
-    Returns
-        ObjectContextData instance containing obj attribute name groups for the element
-    """
-    src = get_object_source_file(element)
-    typehints = get_type_hints(element) if isinstance(element,
-            (type, types.MethodType, types.FunctionType, types.ModuleType)) \
-        else {}
-    all_names = tuple(dir(element))
-    published_names = tuple(getattr(element, '__all__', []))
-    public_names = tuple(attr for attr in all_names if public_attr_name(attr))
-    return ObjectContextData(path=path, element=element, source=src, typehints=typehints,
-        all=all_names, published=published_names, public=public_names)
 
 def get_object_source_file(element: object) -> Union[str, SentinelTag]:
     """
@@ -429,7 +407,7 @@ def get_object_source_file(element: object) -> Union[str, SentinelTag]:
             raise
     return SentinelTag(Tag.NO_SOURCE)
 
-def get_attribute_source(attribute: Any) -> Tuple[str, types.ModuleType]:
+def get_attribute_source(attribute: Any) -> Tuple[StrOrTag, types.ModuleType]:
     """
     Get information about the source context for the attribute.
 
@@ -437,7 +415,7 @@ def get_attribute_source(attribute: Any) -> Tuple[str, types.ModuleType]:
         attribute (Any): The element to get information about
 
     Returns the source file and module associated with the attribute
-        Tuple[str, types.ModuleType]
+        Tuple[StrOrTag, types.ModuleType]
     """
     src_file = get_object_source_file(attribute)
     src_module = inspect.getmodule(attribute)
@@ -445,20 +423,6 @@ def get_attribute_source(attribute: Any) -> Tuple[str, types.ModuleType]:
         if src_module is not None:
             assert isinstance(src_module, types.ModuleType), \
                 f'BAD source pattern: {src_file = }, {src_module = }'
-            # debug_modules = (
-            #     'logging',
-            #     'lib.adafruit_logging',
-            #     'typing',
-            #     '_weakrefset',
-            #     'weakref',
-            #     '_thread',
-            #     'string',
-            #     'importlib._bootstrap_external',
-            #     'importlib._bootstrap',
-            # )
-            # if src_module.__name__ not in debug_modules:  # DEBUG
-            #     assert src_module.__name__ in debug_modules, \
-            #         f'{src_module.__name__ = } with {src_file = }'
     elif src_file is SentinelTag(Tag.BUILTIN_EXCLUDE) or \
             src_file is SentinelTag(Tag.GET_SOURCE_FAILURE):
         assert isinstance(src_module, types.ModuleType), \
@@ -473,8 +437,8 @@ def get_attribute_source(attribute: Any) -> Tuple[str, types.ModuleType]:
 
 def attribute_name_compare_key(attribute_name: Union[str, tuple[int, str]]) -> Tuple[int, str]:
     """
-    Generate a sort key for attribute names, prioritizing public, dunder, leading double
-    underscore, and private attribute names in that order.
+    Generate a sort key for attribute names, prioritizing public, not dunder leading double
+    underscore, dunder, and private attribute names in that order.
 
     If a tuple is provided instead of a str, return it unaltered. It is supposed to already
     contain the proper sorting index as the first element.
@@ -488,12 +452,12 @@ def attribute_name_compare_key(attribute_name: Union[str, tuple[int, str]]) -> T
     """
     if isinstance(attribute_name, tuple):
         return attribute_name
-    if attribute_name.startswith('__') and attribute_name.endswith('__'):  # dunder
-        generated_key = 1
+    if attribute_name.startswith('__') and attribute_name.endswith('__'):
+        generated_key = 2  # dunder
     elif attribute_name.startswith('__'):
-        generated_key = 2
-    elif attribute_name.startswith('_'): # private
-        generated_key = 3
+        generated_key = 1  # double leading underscore, but not dunder
+    elif attribute_name.startswith('_'):
+        generated_key = 3  # private
     else:
         generated_key = 0  #public
     return generated_key, attribute_name
@@ -502,7 +466,7 @@ def get_is_functions() -> Tuple[Tuple[str, Callable[[Any], bool]]]:
     """
     collect the inspect.is«something» methods
 
-    sorted so that tags created using this will be in sorted order as well
+    sorted so that tags created iterating over this will be in sorted order as well
 
     Returns:
         Tuple[Tuple[str, Callable[[Any], bool]]]: A tuple of tuples containing the names of
@@ -514,7 +478,7 @@ def get_is_functions() -> Tuple[Tuple[str, Callable[[Any], bool]]]:
 
 GLOBAL_IS_FUNCTIONS = get_is_functions()
 
-def verify_is_tags(tags: Tuple[str]) -> None:
+def _verify_is_tags(tags: Tuple[str]) -> None:
     """
     Do sanity check on the "is" function tags this code currently understands how to process
 
@@ -543,7 +507,7 @@ def verify_is_tags(tags: Tuple[str]) -> None:
         raise ValueError(f'{tags = } is a set of tags '
                             'that has not been validated together')
 
-def wrap_test(routine: Callable, obj: Any) -> bool:
+def _wrap_test(routine: Callable, obj: Any) -> bool:
     """
     Trap (and ignore) any TypeError calling the routine with obj
 
@@ -571,7 +535,7 @@ def get_tag_set(obj: Any) -> Tuple[str]:
     :return tuple of «is»names that the obj matches
     :rtype Tuple[str, ...]
     """
-    return tuple(tag for tag, test in GLOBAL_IS_FUNCTIONS if wrap_test(test, obj))
+    return tuple(tag for tag, test in GLOBAL_IS_FUNCTIONS if _wrap_test(test, obj))
 
 def get_value_information(value: Any) -> Tuple[SentinelTag, Any]:
     """
@@ -608,7 +572,7 @@ def get_value_information(value: Any) -> Tuple[SentinelTag, Any]:
     # Catch-all for unhandled types
     return SentinelTag(Tag.DATA_UNHANDLED), ApplicationFlagError('UnhandledDataType')
 
-def public_attr_name(name: str) -> bool:
+def is_public_attr_name(name: str) -> bool:
     """
     Determines if a given attribute name should be considered 'public'.
 
@@ -619,7 +583,7 @@ def public_attr_name(name: str) -> bool:
         bool: True if the attribute is considered public, False otherwise.
     """
     if name.startswith('__') and name.endswith('__'):
-        return False
+        return False  # dunder
     if name.startswith('__'):
         return True
     return not name.startswith('_')
@@ -692,29 +656,6 @@ def get_signature(routine: Callable) -> Tuple[Tuple[ParameterDetail], Union[str,
     doc_string = getattr(routine, '__doc__', SentinelTag(Tag.NO_DOCSTRING))
     return tuple(signature_fields), return_typehint, doc_string
 
-def is_defined_within_same_package(attribute, my_object):
-    """
-    Check if the attribute is an instance of a class that is defined within the same
-    package as my_object.
-
-    Args:
-        attribute (Any): The attribute whose origin we want to check.
-        my_object (Any): The reference object used to determine the package scope.
-
-    Returns:
-        bool: True if attribute is defined within the same package as my_object, False otherwise.
-    """
-    attribute_module = getattr(type(attribute), '__module__', None)
-    my_object_module = getattr(type(my_object), '__module__', None)
-    return attribute_module == my_object_module
-
-    # print(f'{dir(my_object) = }')
-    # print(f'{type(my_object) = } {my_object.__file__ = }')
-    # print(f'{my_object.__path__ = }')
-    # print(f'{my_object.__package__ = } {my_object.__name__ = }')
-    # print(f"<class '{my_object.__package__}.\n")
-    # raise ValueError('stop and debug')
-
 def details_without_tags(my_object: Any, attr_name: str, attribute: Any) -> tuple:
     """
     Collect details when an attribute does not match any of the inspect "is" functions
@@ -727,11 +668,7 @@ def details_without_tags(my_object: Any, attr_name: str, attribute: Any) -> tupl
     Returns:
         Tuple: A tuple containing attribute profile details
     """
-    # module_class_instance_prefix = f"<class '{my_object.__package__ = }."
     module_class_instance_prefix = f"<class '{my_object.__name__}."
-    # print(f'"{attr_name}" {type(attribute) = }, prfx: {module_class_instance_prefix}\n' +
-    #         f' {str(type(attribute)).startswith(module_class_instance_prefix) = }')
-    # if is_defined_within_same_package(attribute, my_object):
     if str(type(attribute)).startswith(module_class_instance_prefix):
         return ProfileConstant.PKG_CLS_INST, SentinelTag(Tag.OTHER_EXPAND)
     if my_object.__name__ not in getattr(attribute, '__module__', my_object.__name__):
@@ -812,8 +749,10 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
     """
     if context.mode == ProfileConstant.KEY_VALUE_MODE:
         return _key_value_info(context, attr_name)
-    if context.mode != ProfileConstant.GENERIC_MODE:
-        raise ValueError(f'Unhandled {context.mode = }')
+    if context.mode not in (ProfileConstant.GENERIC_MODE,
+                            ProfileConstant.MODULE_MODE,
+                            ProfileConstant.CLASS_MODE):
+        raise NotImplementedError(f'Unhandled {context.mode = }')
     attr_annotation = get_annotation_info(
         context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION)
     try:
@@ -836,7 +775,7 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
         recognized = True
         details.append(details_without_tags(context.element, attr_name, attribute))
     else:
-        verify_is_tags(attr_tags)
+        _verify_is_tags(attr_tags)
         if InspectIs.BUILTIN in attr_tags:
             recognized = True
             details.append((InspectIs.BUILTIN, SentinelTag(Tag.BUILTIN_EXCLUDE)))

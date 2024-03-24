@@ -8,7 +8,6 @@ import types
 from typing import Iterable, Tuple, Hashable, Union, Dict, Set, FrozenSet
 from collections import namedtuple
 from dataclasses import dataclass
-# import inspect
 import logging
 from queue import Queue
 from prototype_import import import_module
@@ -23,7 +22,6 @@ from prototype_support import (
     ParameterDetail,
     attribute_name_compare_key,
     get_attribute_info,
-    # get_object_context_data,
     populate_object_context,
 )
 MatchingContext = namedtuple(
@@ -88,18 +86,20 @@ class Key:
     SIG_RETURN: int = 1
     SIG_DOC: int = 2
 
-class CfgMeta(type):
-    """Override attribute setting to convert comma delimited str to Set[str]"""
-    def __setattr__(cls, attr_name: str, value: str):
-        # Dynamically create and update class attributes
-        if not isinstance(value, types.FunctionType):
-            if isinstance(value, str):
-                value = set(value.split(','))
-            super().__setattr__(attr_name, value)
+@dataclass(frozen=True)
+class Ignore:
+    """
+    Constants for reportable items to suppress
+    """
+    module_context: str = 'module'
+    class_context: str = 'class'
+    method_context: str = 'method'  # includes functions
+    parameter_context: str = 'parameter'
+    return_context: str = 'return'
+    scope_context: str = 'scope'
 
-# @dataclass(frozen=True)
-@dataclass
-class Cfg(metaclass=CfgMeta):  # pylint:disable=too-many-instance-attributes
+@dataclass(frozen=True)
+class Cfg:  # pylint:disable=too-many-instance-attributes
     """
     Constants for configuration settings lookup
     """
@@ -132,37 +132,22 @@ class Cfg(metaclass=CfgMeta):  # pylint:disable=too-many-instance-attributes
     not_in_port: str = 'not implemented in port'
     port_extension: str = 'not implemented in port'
     skipped_attribute: str = 'skipped in either implementation'
-    good_docstring: set = ''
-    good_annotation: set = ''
-
-    ignore_differences: str = 'ignore specified differences'
-
-@dataclass(frozen=True)
-class Ignore:
-    """
-    Constants for reportable items to suppress
-    """
-    module_context: str = 'module'
-    class_context: str = 'class'
-    method_context: str = 'method'  # includes functions
-    parameter_context: str = 'parameter'
-    return_context: str = 'return'
-    scope_context: str = 'scope'
-
-    # docstring: str = 'docstring'
+    good_docstring: FrozenSet = frozenset(
+        (Ignore.module_context, Ignore.class_context, Ignore.method_context))
+    good_annotation: FrozenSet = frozenset(
+        (Ignore.parameter_context, Ignore.return_context, Ignore.scope_context))
 
 @dataclass(frozen=True)
 class Match:
     """
     Constants for string matching, to avoid possible typos in strings used to compare them
     """
-    # pylint:disable=invalid-name
-    POSITIONAL: str = 'POSITIONAL'
+    positional: str = 'POSITIONAL'
 
 @dataclass()
 class MatchPair:
     """
-    Details about the current base and port queue entries being processed.
+    Details about the current base and port implementation queue entries being processed.
     """
     base: ObjectContextData
     port: ObjectContextData
@@ -179,10 +164,7 @@ class ProfilePrototype:
     With the sort order used, private attribute names sort last
     """
     END_DETAIL = ParameterDetail(name='z', kind='KEYWORD', annotation='str', default=None)
-    """Default value to use instead, to avoid issues testing fields"""
-    DYNAMIC_MODULE_ATTRIBUTES = frozenset({'__builtins__', '__cached__', '__file__', '__package__'})
-    """Attribute names that are dynamically populated for a package (when it is loaded),
-    that are not useful for comparing implementations"""
+    """Default value to use instead or None, to avoid issues comparing fields"""
 
     def __init__(self, module_base_name: str, module_port_name: str):
         """
@@ -285,10 +267,6 @@ class ProfilePrototype:
                 Cfg.skipped_attribute: False,
             },
         }
-        Cfg.good_docstring = \
-            f'{Ignore.module_context},{Ignore.class_context},{Ignore.method_context}'
-        Cfg.good_annotation = \
-            f'{Ignore.parameter_context},{Ignore.return_context},{Ignore.scope_context}'
 
         # get from module level variables
         if 'ATTRIBUTE_SCOPE' in globals():
@@ -497,10 +475,14 @@ class ProfilePrototype:
         Returns (FrozenSet) of attribute names identified to not be included in the current
             context for profile matching.
         """
-        if isinstance(context.element, types.ModuleType) and len(context.path) == 1:
-            return self.DYNAMIC_MODULE_ATTRIBUTES
-        # if isinstance(context.element, type):  # a class
-        return frozenset()
+        ignore: set = self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.global_context]
+        if context.mode == PrfC.MODULE_MODE:
+            ignore.update(
+                self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.module_context])
+        if context.mode == PrfC.CLASS_MODE:
+            ignore.update(
+                self._configuration_settings[Cfg.ignore][Cfg.attribute][Cfg.class_context])
+        return frozenset(ignore)
 
     def filter_by_source(self, context: ObjectContextData, name: str, result: tuple) -> bool:
         """
@@ -665,6 +647,13 @@ class ProfilePrototype:
         port_category = profile_port[Key.PROFILE_DETAIL]
         if self._handle_simple_details(name, context, base_category, port_category):
             return
+        # check if name is published in one implementation but not the other
+        if name in context.base.published and name not in context.port.published:
+            self.send_match_diff_header(name, context)
+            rpt_target.info('  published in base implementation, but not in the port')
+        if name not in context.base.published and name in context.port.published:
+            self.send_match_diff_header(name, context)
+            rpt_target.info('  published in port implementation, but not in the base')
         if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE):
             self.queue_attribute_expansion(name, context)
             if not self._shared[Key.HDR_SENT_DIF]:  # Exact match (so far)
@@ -849,8 +838,8 @@ class ProfilePrototype:
         destination: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
         base_sig = base_category[Key.DETAIL_CONTENT]
         port_sig = port_category[Key.DETAIL_CONTENT]
-        base_iter = tuple_generator(base_sig[Key.SIG_PARAMETERS])
-        port_iter = tuple_generator(port_sig[Key.SIG_PARAMETERS])
+        base_iter = tuple_2_generator(base_sig[Key.SIG_PARAMETERS])
+        port_iter = tuple_2_generator(port_sig[Key.SIG_PARAMETERS])
         base_det: ParameterDetail = next(base_iter, self.END_DETAIL)
         port_det: ParameterDetail = next(port_iter, self.END_DETAIL)
         self._shared[Key.HDR_SENT_SIG] = False
@@ -858,19 +847,19 @@ class ProfilePrototype:
         self._shared[Key.KEY_IDX] = -1
         while self.END_DETAIL not in (base_det, port_det):
             self._shared[Key.POS_IDX] += 1
-            if Match.POSITIONAL in base_det.kind and Match.POSITIONAL in port_det.kind:
+            if Match.positional in base_det.kind and Match.positional in port_det.kind:
                 self._handle_matched_parameters(name, context, Key.POS_PARAM_TYPE,
                                                 base_det, port_det)
                 base_det = next(base_iter, self.END_DETAIL)
                 port_det = next(port_iter, self.END_DETAIL)
                 continue
-            if Match.POSITIONAL in base_det.kind:
+            if Match.positional in base_det.kind:
                 self.send_match_sig_header(name, context)
                 destination.info(
                     f'{self._param_prefix(Key.POS_PARAM_TYPE)} in base but not port: {base_det}')
                 base_det = next(base_iter, self.END_DETAIL)
                 continue
-            if Match.POSITIONAL in port_det.kind:
+            if Match.positional in port_det.kind:
                 self.send_match_sig_header(name, context)
                 destination.info(
                     f'{self._param_prefix(Key.POS_PARAM_TYPE)} in port but not base: {port_det}')
@@ -1127,7 +1116,7 @@ def pretty_default(default: Hashable) -> str:
         else '"None"' if default is None else \
         f':{type(default).__name__} "{default}"'
 
-def tuple_generator(src: tuple):
+def tuple_2_generator(src: tuple):
     """
     Create a generator to allow stepping through a tuple using next()
 
@@ -1210,7 +1199,7 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
     else:
         assert profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE), \
             f'{type(profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY]).__name__ = } ¦' + \
-            f'¦{implementation.path}{name}¦{profile}'
+            f'{implementation.path}.{name}¦{profile}'
         assert profile[Key.PROFILE_TAGS] == (), \
             f'{profile[Key.PROFILE_TAGS] = } ¦{implementation.path}¦{name}¦{profile}'
         if profile[Key.PROFILE_TYPE] not in ('list', 'dict', 'mappingproxy'):
@@ -1219,7 +1208,7 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
 def report_profile_data_exceptions(destination: logging.Logger, name: str,
                                    profile_data: Tuple) -> bool:
     """
-    Report some exception cases that are not sever enough to abort further processing.
+    Report some exception cases that are not severe enough to abort further processing.
 
     Args:
         destination (Logger): the report (segment) to append any exception information to

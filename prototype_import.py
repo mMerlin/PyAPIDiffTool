@@ -32,7 +32,7 @@ def import_module(module_name: str) -> ModuleType:
                 logging.error('Module "%s" not found. Please check the module name '
                               'and ensure it is installed.', module_name)
             else:
-                logging.error('Required dependency "%s" could not found while importing "%s". '
+                logging.error('Required dependency "%s" was not found while importing "%s". '
                               'Please install it and retry.', e.name, module_name)
         else:
             logging.error('Error importing module "%s": %s\n Please correct the '
@@ -54,6 +54,8 @@ def test_module_import(module_name: str):
     """
     Dynamically import a single module with error trapping.
 
+    Args:
+        module_name (str): name to use as a module name to import
     """
     try:
         imported_module = import_module(module_name)
@@ -79,12 +81,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     for name in module_names:
         test_module_import(name)
-
-            # print(f'{dir(e) = }')
-            # print(f'{e.args = }')
-            # print(f'{e.msg = }')
-            # print(f'{e.name = }')
-            # print(f'{e = }')
 
 # cSpell:words adafruit, levelname
 # cSpell:ignore nonexistentmodule
