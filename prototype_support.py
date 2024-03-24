@@ -1,16 +1,13 @@
-#profile_support.py
-
 # SPDX-FileCopyrightText: 2024 H Phil Duby
 # SPDX-License-Identifier: MIT
 
-"""Error classes, utility functions, data classes, and other module compare support definitions"""
+"""Code introspection tools"""
 
-# prototype_support.py
 import types
 import enum
-from typing import (Callable, Tuple, Union, Hashable, Mapping, Sequence, NoReturn,
+from typing import (Callable, Tuple, Union, Hashable, Mapping, Sequence,
     get_type_hints,
-    Any, List,
+    Any,
 )
 from collections import namedtuple
 from dataclasses import dataclass
@@ -18,137 +15,21 @@ import inspect
 import decimal
 import fractions
 import logging
+from generic_tools import SentinelTag
 
 ParameterDetail = namedtuple('ParameterDetail', ['name', 'kind', 'annotation', 'default'])
 """Details collected about a function or method parameter"""
 
-class ApplicationRootError(BaseException):
-    """Application specific Exception type. (to be) Part of Exception handling framework"""
-
-class ApplicationFlagError(ApplicationRootError):
-    """
-    Indicates that an error case has already been handled, and the caller just needs to continue.
-    Used as a signal between functions and their callers.
-    """
-
-class ApplicationLogicError(ApplicationRootError):
-    """
-    Indicates an error in the program's logic, suggesting that the assumptions made by the code
-    are violated.
-    """
-
-class SentinelTag:
-    """
-    Creates and manages unique and immutable sentinel objects based on hashable tags.
-
-    Ensures that only one instance exists for each unique hashable tag. Instances are used
-    to mark or signal specific conditions or states uniquely and immutably.
-
-    Class Attributes:
-        _sentinels: A dictionary that maps hashable tags to their respective SentinelTag instances.
-    """
-
-    _sentinels: dict[Hashable, 'SentinelTag'] = {}
-
-    def __new__(cls, tag: Hashable) -> 'SentinelTag':
-        """
-        Ensure only one instance of SentinelTag for each unique tag exists.
-
-        Args:
-            tag: A hashable object used as the unique identifier for the sentinel.
-
-        Returns:
-            The unique instance of SentinelTag for the given tag.
-        """
-        if tag not in cls._sentinels:
-            instance = super().__new__(cls)
-            cls._sentinels[tag] = instance
-            return instance
-        return cls._sentinels[tag]
-
-    def __init__(self, tag: Hashable):
-        """
-        Initialize the SentinelTag instance. This method sets the tag, bypassing __setattr__
-        to maintain immutability.
-
-        Args:
-            tag: The hashable tag for the sentinel.
-        """
-        self.__dict__['_tag'] = tag
-
-    @property
-    def tag(self) -> Hashable:
-        """
-        Retrieve the instance's tag.
-
-        Returns:
-            The hashable tag associated with this sentinel instance.
-        """
-        return self._tag  # pylint:disable=no-member
-
-    def __repr__(self) -> str:
-        """
-        Return the text representation of the SentinelTag instance.
-
-        Returns:
-            A string representation indicating it's a sentinel tag followed by the tag value.
-        """
-        return f"Sentinel Tag: {repr(self._tag)}"  # pylint:disable=no-member
-
-    def __hash__(self) -> int:
-        """
-        Return the hash of the tag, allowing SentinelTag instances to be used as hashable objects.
-
-        Returns:
-            The hash of the _tag attribute.
-        """
-        return hash(self._tag)  # pylint:disable=no-member
-
-    def __eq__(self, other: object) -> bool:
-        """
-        Check equality based on the identity of the instances.
-
-        Args:
-            other: Another object to compare against.
-
-        Returns:
-            True if 'other' is the same instance as 'self'; False otherwise.
-        """
-        return self is other
-
-    def __setattr__(self, key: str, value: Any) -> NoReturn:
-        """
-        Prevent modifications to the instance to ensure immutability.
-
-        Args:
-            key: The attribute name.
-            value: The value to set the attribute to.
-
-        Raises:
-            AttributeError: Always raised to prevent modification of any attributes.
-        """
-        raise AttributeError("SentinelTag instances are immutable.")
-
-    def __delattr__(self, item: str) -> NoReturn:
-        """
-        Prevent deletion of attributes to ensure immutability.
-
-        Args:
-            item: The attribute name to delete.
-
-        Raises:
-            AttributeError: Always raised to prevent deletion of any attributes.
-        """
-        raise AttributeError("SentinelTag instances are immutable.")
-
 StrOrTag = Union[str, SentinelTag]
-AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
+AttributeProfile = Tuple[StrOrTag, str,
+                         Tuple[StrOrTag, types.ModuleType],
+                         Tuple[str, ...],
                          Tuple[tuple, StrOrTag]]
 
 @dataclass(frozen=True)
 class Tag:
-    """
-    Constants for SentinelTag instances, to avoid possible typos in strings used to create them
+    """Constants for SentinelTag instances, to avoid possible typos in strings used to
+    create or compare them.
     """
     # pylint:disable=invalid-name,too-many-instance-attributes
     NO_PARAMETER_ANNOTATION: str = 'No parameter annotation'
@@ -168,6 +49,10 @@ class Tag:
     NO_DATA_ANNOTATION: str = 'no annotation for data'
     NO_DOCSTRING: str = 'No docstring'
     NO_SOURCE: str = 'No source file'
+    ERROR_DATA_TYPE: str = 'Error:Unhandled Data Type'
+    WARNING_NON_INSPECTABLE: str = 'Warning:Non Inspectable Callable'
+    ERROR_ACCESS_FAILURE: str = 'Error:Failure accessing attribute'
+
     NO_TYPEHINT = SentinelTag('no attribute annotation')
 
 @dataclass(frozen=True)
@@ -248,88 +133,6 @@ class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     public: Tuple[str] = None
     """tuple(attr for attr in all if public_attr_name(attr))"""
     skipped: int = 0
-
-class ListHandler(logging.Handler):
-    """Save log records to a list"""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.log_records: List[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        """
-        capture the log record
-
-        Args:
-            record (LogRecord) the standard logging.LogRecord
-        """
-        self.log_records.append(record)
-        return True
-
-    def log_also_to_me(self, logger: logging.Logger) -> bool:
-        """
-        add the list handler instance to a Logger
-
-        Args:
-            logger (logging.Logger) a Logger instance to fully redirect to this ListHandler
-
-        Returns (bool) True if this ListHandler was added to the Logger instance, False if
-            it was already there.
-        """
-        for existing_handler in logger._handlers:  # pylint:disable=protected-access
-            if existing_handler is self:
-                return False  # already there
-        logger.addHandler(self)
-        return True
-
-    def log_only_to_me(self, logger: logging.Logger) -> None:
-        """
-        replace all handlers of a Logger with just me
-
-        Args:
-            logger (logging.Logger) a Logger instance to fully redirect to this ListHandler
-        """
-        # pylint:disable=protected-access
-        while logger._handlers:
-            logger.removeHandler(logger._handlers[0])
-        logger.addHandler(self)
-
-    def to_tuple(self) -> Tuple[Tuple[str, str, int, str, tuple]]:
-        """
-        log record data, without timestamp, as a tuple that can be directly compared
-        for unittest verification.
-
-        Excluded LogRecord fields are not as comparable. They can be different between
-        implementations, and even between runs.
-        LogRecord itself contains different fields between implementations.
-        CircuitPython uses a namedtuple instead of a class, with fields:
-            name
-            levelname
-            levelno
-            msg
-            created
-            args
-        cPython uses a class with additional fields
-            exc_info
-            exc_text
-            filename
-            funcName
-            module
-            msecs
-            pathname
-            process
-            processName
-            relativeCreated
-            stack_info
-            thread
-            threadName
-
-        :return tuples containing name, levelname, levelno, msg, args
-        :rtype Tuple[Tuple[str, str, int, str, tuple]]
-        """
-        if not self.log_records:
-            return tuple()
-        return tuple((rec.name, rec.levelname, rec.levelno, rec.msg, rec.args)
-                     for rec in self.log_records)
 
 def populate_object_context(context: ObjectContextData) -> None:
     """
@@ -570,7 +373,7 @@ def get_value_information(value: Any) -> Tuple[SentinelTag, Any]:
     if isinstance(value, types.FunctionType):
         return (InspectIs.ROUTINE, get_signature(value))
     # Catch-all for unhandled types
-    return SentinelTag(Tag.DATA_UNHANDLED), ApplicationFlagError('UnhandledDataType')
+    return SentinelTag(Tag.DATA_UNHANDLED), SentinelTag(Tag.ERROR_DATA_TYPE)
 
 def is_public_attr_name(name: str) -> bool:
     """
@@ -634,14 +437,14 @@ def get_signature(routine: Callable) -> Tuple[Tuple[ParameterDetail], Union[str,
     """
     if not callable(routine):
         # this is an abort the application error. The code is broken and output can not be trusted
-        raise ApplicationLogicError(
+        raise ValueError(
             f'The routine should always be callable. Detected "{type(routine).__name__}".')
 
     try:
         signature = inspect.signature(routine)
     except ValueError:
         # Some callables may not support introspection of their signature
-        return (None, ApplicationFlagError('NonInspectableCallable'))
+        return (None, SentinelTag(Tag.WARNING_NON_INSPECTABLE))
 
     signature_fields = []
     for name, param in signature.parameters.items():
@@ -690,7 +493,7 @@ def get_module_info(attribute: types.ModuleType) -> Tuple[str]:
     return InspectIs.MODULE, getattr(attribute, '__package__', '«pkg»'), \
         getattr(attribute, '__path__', '«pth»')
 
-def namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
+def _namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
     """
     namedtuple as a tuple of its fields
 
@@ -759,10 +562,10 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
         attribute = getattr(context.element, attr_name)
     except AttributeError:
         logging.info('Attribute "%s" does not exist on the provided object.', attr_name)
-        return (attr_name, attr_annotation, SentinelTag(Tag.NOT_AN_ATTRIBUTE))
+        return attr_name, attr_annotation, SentinelTag(Tag.NOT_AN_ATTRIBUTE)
     except Exception as e:  # pylint:disable=broad-exception-caught
         logging.error('Unexpected error accessing "%s": %s', attr_name, e)
-        return (attr_name, attr_annotation, ApplicationFlagError(type(e).__name__))
+        return attr_name, attr_annotation, SentinelTag(Tag.ERROR_ACCESS_FAILURE)
     # Collect common information with a bunch of different endings depending on context
     details = []
     details.append(attr_annotation)
@@ -797,7 +600,7 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
             else:
                 if isinstance(attribute, type) and issubclass(attribute, tuple) and \
                         hasattr(attribute, '_fields'):
-                    details.append(namedtuple_fields(attribute))
+                    details.append(_namedtuple_fields(attribute))
                 else:
                     details.append((ProfileConstant.A_CLASS, SentinelTag(Tag.OTHER_EXPAND)))
         elif InspectIs.DATADESCRIPTOR in attr_tags or InspectIs.GETSETDESCRIPTOR in attr_tags:
@@ -808,8 +611,13 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
         # details.append((ProfileConstant.SOMETHING_ELSE, '«need a processing category»'))
     return (attr_name, tuple(details))
 
+# Usage example:
+if __name__ == '__main__':
+    ctx=ObjectContextData(path=(logging.__name__,), element=logging)
+    populate_object_context(ctx)
+    print(get_attribute_info(ctx, ctx.public[-1]))
+
 # pylint:disable=line-too-long
-# cSpell:words dunder, inspectable, levelname, typehints, getsourcefile, adafruit
+# cSpell:words dunder, typehints, getsourcefile, getset, inspectable
 # cSpell:words asyncgen, asyncgenfunction, coroutinefunction, datadescriptor, generatorfunction, getsetdescriptor, memberdescriptor, methoddescriptor, methodwrapper
-# cSpell:ignore prfx getset
 # cSpell:allowCompoundWords true

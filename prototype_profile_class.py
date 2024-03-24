@@ -10,12 +10,9 @@ from collections import namedtuple
 from dataclasses import dataclass
 import logging
 from queue import Queue
-from prototype_import import import_module
+from generic_tools import SentinelTag, ListHandler, import_module
 from prototype_support import (
-    ApplicationFlagError,
     ObjectContextData,
-    ListHandler,
-    SentinelTag,
     Tag,
     InspectIs as Is,
     ProfileConstant as PrfC,
@@ -23,7 +20,10 @@ from prototype_support import (
     attribute_name_compare_key,
     get_attribute_info,
     populate_object_context,
+    StrOrTag,
 )
+# from app_error_framework import ApplicationLogicError
+
 MatchingContext = namedtuple(
     'MatchingContext', ['base_path', 'port_path', 'base_element', 'port_element'])
 """
@@ -38,7 +38,6 @@ Fields:
     port_element: object port implementation element being profiled (from full port_path)
 """
 
-StrOrTag = Union[str, SentinelTag]
 MethodSignatureDetail = Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
 AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
                          Tuple[tuple, StrOrTag]]
@@ -451,7 +450,7 @@ class ProfilePrototype:
             assert raw_result[Key.INFO_NAME] == name, 'get_attribute_info should return the ' \
                 f'requested attribute name: "{raw_result[Key.INFO_PROFILE]}" not equal "{name}"'
             result = (attribute_name_compare_key(name),) + raw_result[1:]
-            if isinstance(result[Key.INFO_PROFILE], ApplicationFlagError):
+            if result[Key.INFO_PROFILE] is SentinelTag(Tag.ERROR_ACCESS_FAILURE):
                 rpt_target.error(f'**** Error accessing {context.path} "{name}" attribute: ' +
                     f'{result}')
                 context.skipped += 1
@@ -1250,19 +1249,19 @@ def report_profile_data_exceptions(destination: logging.Logger, name: str,
     # --ignore-attributes           Comma-separated list of attributes to globally ignore.
 # IGNORE_CLASS_ATTRIBUTES = ('__module__', 'TEst')
     # --ignore-class-attributes     Comma-separated list of attributes to ignore in class context.
-IGNORE_DOCSTRING = 'all'  # 'all', 'module', 'class', 'method'
+# IGNORE_DOCSTRING = 'all'  # 'all', 'module', 'class', 'method'
     # --ignore-docstring            Comma-separated list of contexts to ignore docstring changes in.
     #                               all, module, class, method
-IGNORE_ADDED_ANNOTATION = 'all'  # 'all', 'parameter', 'return', 'scope'
+# IGNORE_ADDED_ANNOTATION = 'all'  # 'all', 'parameter', 'return', 'scope'
     # --ignore-added-annotations    Comma-separated list of contexts Ignore cases where the base did
     #                               not specify any annotation, but the port did.
-REPORT_MATCHED = True  # default: True
+# REPORT_MATCHED = True  # default: True
     # --report-matched              Generate report for differences in matched attributes.
-REPORT_NOT_IMPLEMENTED = False  # default: True
+# REPORT_NOT_IMPLEMENTED = False  # default: True
     # --report-not-implemented      Generate report for attributes not implemented in the port.
-REPORT_EXTENSION = False  # default: True
+# REPORT_EXTENSION = False  # default: True
     # --report-extensions           Generate report for extensions implemented in the port.
-REPORT_SKIPPED = False  # default: False
+REPORT_SKIPPED = True  # default: False
     # --report-skipped              Generate report for attributes that were skipped in either
     #                               implementation.
 
