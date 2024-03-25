@@ -51,6 +51,7 @@ class Tag:
     NO_SOURCE: str = 'No source file'
     ERROR_DATA_TYPE: str = 'Error:Unhandled Data Type'
     WARNING_NON_INSPECTABLE: str = 'Warning:Non Inspectable Callable'
+    WARNING_NO_ATTRIBUTE: str = 'Warning:Cannot get attribute'
     ERROR_ACCESS_FAILURE: str = 'Error:Failure accessing attribute'
 
     NO_TYPEHINT = SentinelTag('no attribute annotation')
@@ -238,7 +239,7 @@ def get_attribute_source(attribute: Any) -> Tuple[StrOrTag, types.ModuleType]:
             f'New source pattern: {src_file = }, {src_module = }'
     return src_file, src_module
 
-def attribute_name_compare_key(attribute_name: Union[str, tuple[int, str]]) -> Tuple[int, str]:
+def attribute_name_compare_key(attribute_name: Union[str, Tuple[int, str]]) -> Tuple[int, str]:
     """
     Generate a sort key for attribute names, prioritizing public, not dunder leading double
     underscore, dunder, and private attribute names in that order.
@@ -459,7 +460,7 @@ def get_signature(routine: Callable) -> Tuple[Tuple[ParameterDetail], Union[str,
     doc_string = getattr(routine, '__doc__', SentinelTag(Tag.NO_DOCSTRING))
     return tuple(signature_fields), return_typehint, doc_string
 
-def details_without_tags(my_object: Any, attr_name: str, attribute: Any) -> tuple:
+def details_without_tags(my_object: Any, attr_name: str, attribute: Any, details: list) -> None:
     """
     Collect details when an attribute does not match any of the inspect "is" functions
 
@@ -467,21 +468,20 @@ def details_without_tags(my_object: Any, attr_name: str, attribute: Any) -> tupl
         my_object (Any): The object whose attribute is being inspected.
         attr_name (str): The name of the attribute.
         attribute (Any): The attribute being inspected.
-
-    Returns:
-        Tuple: A tuple containing attribute profile details
+        details (list): storage for collected attribute information.
     """
     module_class_instance_prefix = f"<class '{my_object.__name__}."
     if str(type(attribute)).startswith(module_class_instance_prefix):
-        return ProfileConstant.PKG_CLS_INST, SentinelTag(Tag.OTHER_EXPAND)
-    if my_object.__name__ not in getattr(attribute, '__module__', my_object.__name__):
+        details.append((ProfileConstant.PKG_CLS_INST, SentinelTag(Tag.OTHER_EXPAND)))
+    elif my_object.__name__ not in getattr(attribute, '__module__', my_object.__name__):
         # and not in my_object.__all__
         assert not hasattr(my_object, '__all__') or attr_name not in my_object.__all__, \
             f'{attr_name}¦{getattr(attribute, "__module__")}¦' + \
             f"{(ProfileConstant.EXTERN_MODULE, SentinelTag(Tag.SYS_EXCLUDE))}"
-        return ProfileConstant.EXTERN_MODULE, SentinelTag(Tag.SYS_EXCLUDE), \
-            get_module_info(attribute)
-    return get_value_information(attribute)
+        details.append((ProfileConstant.EXTERN_MODULE, SentinelTag(Tag.SYS_EXCLUDE),
+            get_module_info(attribute)))
+    else:
+        details.append(get_value_information(attribute))
 
 def get_module_info(attribute: types.ModuleType) -> Tuple[str]:
     """
@@ -507,26 +507,27 @@ def _namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
         raise ValueError(f'Not a namedtuple: {type(attribute)}')
     return ProfileConstant.NAMEDTUPLE, repr(attribute._fields)
 
-def _key_value_info(context: ObjectContextData, attr_name: str) -> Tuple[str, AttributeProfile]:
+def _key_value_info(context: ObjectContextData, attr_name: str, details: list) -> None:
     """
     Calculate the profile for an element of a dict or mappingproxy object
 
     Args:
         context (ObjectContextData): The context (with object) whose attribute is being inspected.
         attr_name (str): The name of the attribute.
+        details (list): Storage for collected attribute information.
 
-    Returns:
-        Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
-            collected about it, or a tuple containing error information if an error occurred.
+    Outputs:
+        updated (mutated) details list containing information collected about the attribute.
+
+    Raises:
+        AssertionError if input constraints are not met
     """
     assert context.mode == ProfileConstant.KEY_VALUE_MODE, \
         f'only handle key_value context attributes: {context.mode = }'
     assert isinstance(context.element, (dict, types.MappingProxyType)), \
         f'cannot process {type(context.element).__name__} in a key_value context'
-    assert isinstance(attr_name, tuple) and len(attr_name) == 2, \
-        f'attribute name for key_value needs to be (index, key): {attr_name}'
-    attribute = context.element[attr_name[1]]
-    details = []
+    assert isinstance(details, list), f'details {type(details).__name__} must be a list'
+    attribute = context.element[attr_name]
     if isinstance(attribute, types.FunctionType):
         details.append(get_annotation_info(  # __dict__ includes methods
             context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION))
@@ -536,7 +537,78 @@ def _key_value_info(context: ObjectContextData, attr_name: str) -> Tuple[str, At
     details.append((SentinelTag(Tag.NO_SOURCE), None))  # no source info for data
     details.append(())  # no "is" tags for data
     details.append(get_value_information(attribute))
-    return attr_name, tuple(details)
+
+def details_for_tagged_attribute(attr_name: str, attr_tags: Tuple[str], attribute: Any,
+                                 details: list) -> bool:
+    """
+    Collect details when an attribute is true for at least one of the inspect "is" functions
+
+    Args:
+        attr_name (str): The name of the attribute.
+        attr_tags (Tuple[str]) inspect."is"… methods matched by attribute.
+        attribute (Any): The attribute being inspected.
+        details (list): The buffer used to collect attribute information.
+
+    Returns (bool) True if attribute details were collected, False otherwise
+
+    Outputs:
+        updated (mutated) details list containing information collected about the attribute.
+    """
+    if InspectIs.BUILTIN in attr_tags:
+        details.append((InspectIs.BUILTIN, SentinelTag(Tag.BUILTIN_EXCLUDE)))
+    elif InspectIs.ROUTINE in attr_tags:
+        details.append((InspectIs.ROUTINE, get_signature(attribute)))
+    elif InspectIs.MODULE in attr_tags:
+        if getattr(attribute, '__package__') in ('', attr_name):
+            details.append((InspectIs.MODULE, SentinelTag(Tag.BUILTIN_EXCLUDE),
+                            get_module_info(attribute)))
+        else:
+            details.append((InspectIs.MODULE, SentinelTag(Tag.OTHER_EXPAND)))
+    elif InspectIs.CLASS in attr_tags:
+        if attr_name == '__class__':
+            details.append((ProfileConstant.DUNDER, SentinelTag(Tag.SELF_NO_EXPAND)))
+        else:
+            if isinstance(attribute, type) and issubclass(attribute, tuple) and \
+                    hasattr(attribute, '_fields'):
+                details.append(_namedtuple_fields(attribute))
+            else:
+                details.append((ProfileConstant.A_CLASS, SentinelTag(Tag.OTHER_EXPAND)))
+    elif InspectIs.DATADESCRIPTOR in attr_tags or InspectIs.GETSETDESCRIPTOR in attr_tags:
+        details.append((InspectIs.DATADESCRIPTOR, SentinelTag(Tag.OTHER_EXPAND)))
+    else:
+        return False  # Did NOT collect details for the tagged attribute
+    return True
+
+def get_attribute_object(my_object: Any, attr_name: str, details: list) -> \
+        Union[object, SentinelTag]:
+    """
+    Get object for attribute name. Record details if cannot get an object
+
+    Args:
+        my_object (Any): The object whose attribute is being inspected.
+        attr_name (str): The name of the attribute.
+        details (list): storage for collected attribute information.
+
+    Returns Union[object, SentinelTag]
+        the object for the attribute name or
+        SentinelTag(Tag.WARNING_NO_ATTRIBUTE) when could not obtain object for the attribute.
+
+    Outputs:
+        updated (mutated) details list containing error information when could not get the object.
+    """
+    attribute: Any = None
+    try:
+        attribute = getattr(my_object, attr_name)
+    except AttributeError:
+        logging.info('Attribute "%s" does not exist on the provided object %s.',
+                     attr_name, repr(my_object))
+        details.append(SentinelTag(Tag.NOT_AN_ATTRIBUTE))
+        attribute = SentinelTag(Tag.WARNING_NO_ATTRIBUTE)
+    except Exception as e:  # pylint:disable=broad-exception-caught
+        logging.error('Unexpected error accessing "%s" of %s: %s', attr_name, repr(my_object), e)
+        details.append(SentinelTag(Tag.ERROR_ACCESS_FAILURE))
+        attribute = SentinelTag(Tag.WARNING_NO_ATTRIBUTE)
+    return attribute
 
 def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str, AttributeProfile]:
     """
@@ -544,72 +616,44 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
 
     Args:
         context (ObjectContextData): The context (with object) whose attribute is being inspected.
-        attr_name (str): The name of the attribute.
+        attr_name (str): attr_name (str): The name of the attribute.
 
     Returns:
         Tuple[str, AttributeProfile]: A tuple containing the name of the attribute, plus information
             collected about it, or a tuple containing error information if an error occurred.
     """
+    details: list = []  # empty buffer to store collected attribution information details
+    have_all_details = False  # more detail collection is still needed
     if context.mode == ProfileConstant.KEY_VALUE_MODE:
-        return _key_value_info(context, attr_name)
-    if context.mode not in (ProfileConstant.GENERIC_MODE,
-                            ProfileConstant.MODULE_MODE,
-                            ProfileConstant.CLASS_MODE):
+        _key_value_info(context, attr_name[1], details)  # name without the sorting key
+        have_all_details = True
+    elif context.mode not in (ProfileConstant.GENERIC_MODE,
+                              ProfileConstant.MODULE_MODE,
+                              ProfileConstant.CLASS_MODE):
         raise NotImplementedError(f'Unhandled {context.mode = }')
-    attr_annotation = get_annotation_info(
-        context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION)
-    try:
-        attribute = getattr(context.element, attr_name)
-    except AttributeError:
-        logging.info('Attribute "%s" does not exist on the provided object.', attr_name)
-        return attr_name, attr_annotation, SentinelTag(Tag.NOT_AN_ATTRIBUTE)
-    except Exception as e:  # pylint:disable=broad-exception-caught
-        logging.error('Unexpected error accessing "%s": %s', attr_name, e)
-        return attr_name, attr_annotation, SentinelTag(Tag.ERROR_ACCESS_FAILURE)
-    # Collect common information with a bunch of different endings depending on context
-    details = []
-    details.append(attr_annotation)
-    attr_tags = get_tag_set(attribute)
-    details.append(type(attribute).__name__)
-    details.append(get_attribute_source(attribute))
-    details.append(attr_tags)
-    recognized = False
-    if not attr_tags:
-        recognized = True
-        details.append(details_without_tags(context.element, attr_name, attribute))
-    else:
+    if not have_all_details:
+        attr_annotation = get_annotation_info(
+            context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION)
+        details.append(attr_annotation)
+        attribute = get_attribute_object(context.element, attr_name, details)
+        if attribute is SentinelTag(Tag.WARNING_NO_ATTRIBUTE):
+            have_all_details = True  # all handled, just continue
+    if not have_all_details:
+        # Collect common information with a bunch of different endings depending on context
+        details.append(type(attribute).__name__)
+        details.append(get_attribute_source(attribute))
+        attr_tags = get_tag_set(attribute)
+        details.append(attr_tags)
+        if not attr_tags:
+            details_without_tags(context.element, attr_name, attribute, details)
+            have_all_details = True
+    if not have_all_details:
         _verify_is_tags(attr_tags)
-        if InspectIs.BUILTIN in attr_tags:
-            recognized = True
-            details.append((InspectIs.BUILTIN, SentinelTag(Tag.BUILTIN_EXCLUDE)))
-        elif InspectIs.ROUTINE in attr_tags:
-            recognized = True
-            details.append((InspectIs.ROUTINE, get_signature(attribute)))
-        elif InspectIs.MODULE in attr_tags:
-            recognized = True
-            if getattr(attribute, '__package__') in ('', attr_name):
-                details.append((InspectIs.MODULE, SentinelTag(Tag.BUILTIN_EXCLUDE),
-                                get_module_info(attribute)))
-            else:
-                details.append((InspectIs.MODULE, SentinelTag(Tag.OTHER_EXPAND)))
-            # raise ValueError(f'{attr_name = }, module: {details = }')
-        elif InspectIs.CLASS in attr_tags:
-            recognized = True
-            if attr_name == '__class__':
-                details.append((ProfileConstant.DUNDER, SentinelTag(Tag.SELF_NO_EXPAND)))
-            else:
-                if isinstance(attribute, type) and issubclass(attribute, tuple) and \
-                        hasattr(attribute, '_fields'):
-                    details.append(_namedtuple_fields(attribute))
-                else:
-                    details.append((ProfileConstant.A_CLASS, SentinelTag(Tag.OTHER_EXPAND)))
-        elif InspectIs.DATADESCRIPTOR in attr_tags or InspectIs.GETSETDESCRIPTOR in attr_tags:
-            recognized = True
-            details.append((InspectIs.DATADESCRIPTOR, SentinelTag(Tag.OTHER_EXPAND)))
-    if not recognized:
+        have_all_details = details_for_tagged_attribute(attr_name, attr_tags, attribute, details)
+    if not have_all_details:
         raise ValueError(f'{attr_tags = } not handled by current logic')
         # details.append((ProfileConstant.SOMETHING_ELSE, '«need a processing category»'))
-    return (attr_name, tuple(details))
+    return attr_name, tuple(details)
 
 # Usage example:
 if __name__ == '__main__':
