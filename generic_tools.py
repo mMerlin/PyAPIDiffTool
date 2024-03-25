@@ -7,6 +7,8 @@ Generic tools useful for applications
 
 from types import ModuleType
 from typing import Hashable, NoReturn, Tuple, Any, List
+from dataclasses import dataclass
+from threading import Lock
 import logging
 import importlib
 
@@ -92,6 +94,26 @@ class ListHandler(logging.Handler):
         return tuple((rec.name, rec.levelname, rec.levelno, rec.msg, rec.args)
                      for rec in self.log_records)
 
+@dataclass(frozen=True)
+class ExampleTags:
+    """
+    An example set of tags that could be used for SentinelTag creation.
+
+    In any but the simplest usage cases, using a consistent naming convention can be
+    useful.
+
+    In more complex cases, multiple …Tag class can help document the usage context, and
+    avoid the need for complex tag values be unique and document the context.
+    """
+    # pylint:disable=invalid-name
+    NO_VALUE_DEFINE: str = 'No value defined'
+    """Useful for distinguishing between 'not specified' and None or empty. For example,
+    as a default value when None could be an actual value."""
+    ERROR_HANDLED: str = 'error handled'
+    """Useful for letting a caller know that a problem has been handled, and it is safe to
+    just continue to the next item"""
+    PREFIX1_NAME: str = 'identifier for name in the context of prefix 1'
+
 class SentinelTag:
     """
     Creates and manages unique and immutable sentinel objects based on hashable tags.
@@ -99,11 +121,20 @@ class SentinelTag:
     Ensures that only one instance exists for each unique hashable tag. Instances are used
     to mark or signal specific conditions or states uniquely and immutably.
 
+    When instances are used cross module, be sure there is a common repository for the tags
+    being used. Using literal value for tag creation is not recommended. A frozen dataclass
+    of constant values is safer.
+
+    See ExampleTags for an example and related ideas.
+
+    Compare SentinelTag instances using 'is' instead of '=='. __eq__ uses 'is' anyway.
+
     Class Attributes:
         _sentinels: A dictionary that maps hashable tags to their respective SentinelTag instances.
     """
 
     _sentinels: dict[Hashable, 'SentinelTag'] = {}
+    _lock = Lock()  # Class-level lock for thread-safe instance creation
 
     def __new__(cls, tag: Hashable) -> 'SentinelTag':
         """
@@ -115,10 +146,10 @@ class SentinelTag:
         Returns:
             The unique instance of SentinelTag for the given tag.
         """
-        if tag not in cls._sentinels:
-            instance = super().__new__(cls)
-            cls._sentinels[tag] = instance
-            return instance
+        with cls._lock:
+            if tag not in cls._sentinels:
+                instance = super().__new__(cls)
+                cls._sentinels[tag] = instance
         return cls._sentinels[tag]
 
     def __init__(self, tag: Hashable):
@@ -207,25 +238,25 @@ def import_module(module_name: str) -> ModuleType:
         ModuleType: The imported module.
 
     Raises:
-        ImportError: If the module cannot be found or loaded.
+        ModuleNotFoundError: If the specified module name, or a dependency for is, cannot be found.
+        ImportError: If the module cannot be loaded for another reason.
         AttributeError: For attribute-related errors, such as incorrect module name types.
         Exception: For any unexpected errors during the import process.
     """
     try:
         module = importlib.import_module(module_name)
-        logging.info('Successfully imported module: %s', module_name)
         return module
-    except ImportError as e:
-        if isinstance(e, ModuleNotFoundError):
-            if e.name == module_name:
-                logging.error('Module "%s" not found. Please check the module name '
-                              'and ensure it is installed.', module_name)
-            else:
-                logging.error('Required dependency "%s" was not found while importing "%s". '
-                              'Please install it and retry.', e.name, module_name)
+    except ModuleNotFoundError as e:
+        if e.name == module_name:
+            logging.error('Module "%s" not found. Please check the module name '
+                          'and ensure it is installed.', module_name)
         else:
-            logging.error('Error importing module "%s": %s\n Please correct the '
-                          'problem then retry.', module_name, e)
+            logging.error('Required dependency "%s" was not found while importing "%s". '
+                          'Please install it and retry.', e.name, module_name)
+        raise
+    except ImportError as e:
+        logging.error('Error importing module "%s": %s\n Please correct the '
+                      'problem then retry.', module_name, e)
         raise
     except AttributeError as e:
         if e.name == 'startswith':
