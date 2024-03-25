@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Hashable, NoReturn, Tuple, Any, List
 from dataclasses import dataclass
 from threading import Lock
+import inspect
 import logging
 import importlib
 
@@ -270,6 +271,36 @@ def import_module(module_name: str) -> ModuleType:
                       type(e).__name__, module_name, e)
         raise
 
-# cSpell:words levelname
+def tuple_2_generator(src: tuple):
+    """
+    Create a generator to allow stepping through a tuple using next()
+
+    Args:
+        src (tuple): the tuple to create the generator for
+
+    Usage:
+        iter_name = tuple_2_generator(tuple_variable)
+        element = next(iter_name, end_marker_value)  # until end_marker_value detected
+    """
+    yield from src
+
+def is_attr_name(name: str) -> bool:
+    """
+    Check if a given name is a valid Python attribute name.
+
+    Args:
+        name: the string to check
+
+    Returns True if the name is valid to use as a python attribute name, False otherwise
+    """
+    return (
+        isinstance(name, str) and
+        len(name) > 0 and
+        (not name[0].isdigit()) and
+        all(char.isalnum() or char == '_' for char in name) and
+        not inspect.iskeyword(name)
+    )
+
+# cSpell:words levelname iskeyword
 # cSpell:ignore msecs
 # cSpell:allowCompoundWords true

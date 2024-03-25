@@ -10,7 +10,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 import logging
 from queue import Queue
-from generic_tools import SentinelTag, ListHandler, import_module
+from generic_tools import SentinelTag, ListHandler, import_module, tuple_2_generator, is_attr_name
 from introspection_tools import (
     ObjectContextData,
     Tag,
@@ -345,7 +345,7 @@ class ProfilePrototype:
             cfg_value = globals().get(glb_attr)
             if isinstance(cfg_value, str):  # convert single str to tuple of str
                 cfg_value = (cfg_value,)
-            assert isinstance(cfg_value, tuple) and all(_is_attr_name(ele) for ele in cfg_value), \
+            assert isinstance(cfg_value, tuple) and all(is_attr_name(ele) for ele in cfg_value), \
                 f'Bad {target_attr} attributes to ignore ' + \
                 f'{type(cfg_value).__name__} {repr(cfg_value)}'
             self._configuration_settings[Cfg.ignore][Cfg.attribute][target_attr].update(cfg_value)
@@ -1065,22 +1065,6 @@ class ProfilePrototype:
             target.info('  Method Parameters:')
             self._shared[Key.HDR_SENT_SIG] = True
 
-def _is_attr_name(name: str) -> bool:
-    """
-    Check if a given name is a valid Python attribute name.
-
-    Args:
-        name: the string to check
-
-    Returns True if the name is valid to use as a python attribute name, False otherwise
-    """
-    return (
-        isinstance(name, str) and
-        len(name) > 0 and
-        (not name[0].isdigit()) and
-        all(char.isalnum() or char == '_' for char in name)
-    )
-
 def pretty_annotation(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
     Format an annotation string or tag for display
@@ -1114,15 +1098,6 @@ def pretty_default(default: Hashable) -> str:
     return '«none»' if default is SentinelTag(Tag.NO_DEFAULT) \
         else '"None"' if default is None else \
         f':{type(default).__name__} "{default}"'
-
-def tuple_2_generator(src: tuple):
-    """
-    Create a generator to allow stepping through a tuple using next()
-
-    Args:
-        src (tuple): the tuple to create the generator for
-    """
-    yield from src
 
 def validate_profile_data(name: str, implementation: ObjectContextData,
                           profile: AttributeProfile) -> None:
