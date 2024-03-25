@@ -11,16 +11,16 @@ from dataclasses import dataclass
 import logging
 from queue import Queue
 from generic_tools import SentinelTag, ListHandler, import_module
-from prototype_support import (
+from introspection_tools import (
     ObjectContextData,
     Tag,
     InspectIs as Is,
     ProfileConstant as PrfC,
+    StrOrTag,
     ParameterDetail,
     attribute_name_compare_key,
     get_attribute_info,
     populate_object_context,
-    StrOrTag,
 )
 # from app_error_framework import ApplicationLogicError
 
