@@ -3,17 +3,18 @@
 
 """Error class framework for the applications"""
 
-class ApplicationRootError(BaseException):
-    """Application specific Exception type. (to be) Part of Exception handling framework"""
+class ApplicationRootError(Exception):
+    """Base class for application-specific exceptions."""
 
 class ApplicationFlagError(ApplicationRootError):
     """
-    Indicates that an error case has already been handled, and the caller just needs to continue.
-    Used as a signal between functions and their callers.
+    Signals that an error has been handled; the caller should continue.
+    Useful for control flow where raising a conventional error, or returning a flag value
+    is not desired.
     """
 
 class ApplicationLogicError(ApplicationRootError):
     """
-    Indicates an error in the program's logic, suggesting that the assumptions made by the code
-    are violated.
+    Indicates a violation in the program's logic or assumptions.
+    Can be used to catch programming errors early.
     """
