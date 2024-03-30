@@ -7,10 +7,12 @@ Generic tools useful for applications
 
 from types import ModuleType
 from typing import (
-    Hashable, NoReturn, Tuple, Optional, Sequence, Callable,
+    Hashable, NoReturn, Tuple, Optional, Sequence, Callable, FrozenSet,
     Any, List, Dict, Set,
 )
+import os
 import argparse
+import configparser
 import platform
 from pathlib import Path
 from dataclasses import dataclass
@@ -240,6 +242,63 @@ class TriStateAction(argparse.Action):
                  values: Optional[List[str]], option_string: str = None):
         setattr(namespace, self.dest, not option_string.startswith('--no-'))
 
+def process_keyword_settings(value: str, valid_values: FrozenSet[str], negation_prefix: str = 'no-',
+                             raise_exception: bool = False) -> Dict[str, bool]:
+    """
+    Processes a comma-separated list of keywords, maintaining order and allowing for negations.
+    Later entries can reverse the effect of previous ones.
+
+    Args:
+        value (str): The comma-separated string of keywords from the configuration.
+        valid_values (Set[str]): A set of valid keywords without 'all' or their negated versions.
+        negation_prefix (str): Prefix indicating negation of a keyword.
+
+    Returns:
+        Dict[str, bool]: A dictionary where keys are the valid keywords and values are boolean
+                         indicating their enabled (True) or negated (False) status.
+    """
+    result = {}
+    error_detected = False
+    if not value:
+        return result  # short cut when no keywords: prevents error treating empty string as choice
+    if value == 'all':
+        # when used, 'all' must be by itself
+        return {key: True for key in valid_values}
+        # for key in valid_values:
+        #     result[key] = True
+        # return result
+    for choice in map(str.strip, value.split(',')):
+        key = choice[len(negation_prefix):] if choice.startswith(negation_prefix) else choice
+        if key in valid_values:
+            # result[key] = not choice.startswith(negation_prefix)
+            result[key] = key == choice
+        else:
+            error_detected = True
+            logging.warning('"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
+    if error_detected and raise_exception:
+        raise ValueError('Invalid keyword set')
+    return result
+
+def validate_attribute_names(value: str, raise_exception: bool = False) -> Set[str]:
+    """
+    Validates and processes a comma-separated list of attribute names.
+
+    Args:
+        value (str): The comma-separated string of attribute names from the configuration.
+
+    Returns:
+        Set[str]: A set of validated attribute names.
+    """
+    entries = set(map(str.strip, value.split(',')))
+    result = {ent for ent in entries if is_attr_name(ent)}
+    not_attributes = entries - result
+    if not_attributes:
+        logging.warning('"%s" invalid attribute names ignored', ', '.join(not_attributes))
+        if raise_exception:
+            raise ValueError(f'invalid attribute names: "{", ".join(not_attributes)}"')
+
+    return result
+
 def add_tri_state_argument(parser: argparse.ArgumentParser, argument_name: str,
                            help_text: str) -> None:
     """
@@ -277,8 +336,6 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
         False if negated).
     """
     valid_choices = set(choices)
-    negated_choices = {negation + choice for choice in choices}
-    all_choices = valid_choices | {'all'} | negated_choices
 
     def all_or_keys_validator(s: str) -> Dict[str, bool]:
         """
@@ -298,27 +355,7 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
             argparse traps the raised exceptions, and creates it's own generic message, ignoring
             the more detailed information provided here.
         """
-        raw_user_choices = tuple(map(str.strip, s.split(',')))
-        user_choices = set(raw_user_choices)
-
-        if 'all' in user_choices and len(user_choices) > 1:
-            raise ValueError("'all' cannot be used with other choices.")
-
-        if not user_choices.issubset(all_choices):
-            invalid = user_choices - all_choices
-            raise ValueError(f"Invalid choice(s): {', '.join(invalid)}. "
-                             f"Valid choices are: {', '.join(sorted(all_choices))}.")
-
-        # Special handling for 'all' choice to include all valid choices
-        if 'all' in user_choices:
-            return {choice: True for choice in valid_choices}
-
-        # Process user choices in the order supplied, handling repeats and negations
-        result = {}
-        for choice in raw_user_choices:
-            normalized_choice = choice[len(negation):] if choice.startswith(negation) else choice
-            result[normalized_choice] = not choice.startswith(negation)
-        return result
+        return process_keyword_settings(s, valid_choices, negation, raise_exception=True)
 
     return all_or_keys_validator
 
@@ -338,13 +375,14 @@ def attribute_names_validator(s: str) -> Set[str]:
         argparse traps the raised exception, and creates it's own generic message, ignoring
         the more detailed information provided here.
     """
-    attr_names = set(map(str.strip, s.split(',')))
-    not_attr = {name for name in attr_names if not is_attr_name(name)}
+    return validate_attribute_names(s, raise_exception=True)
+    # attr_names = set(map(str.strip, s.split(',')))
+    # not_attr = {name for name in attr_names if not is_attr_name(name)}
 
-    if not_attr:
-        raise ValueError(f"Invalid attribute name(s): {', '.join(not_attr)}")
+    # if not_attr:
+    #     raise ValueError(f"Invalid attribute name(s): {', '.join(not_attr)}")
 
-    return attr_names
+    # return attr_names
 
 def import_module(module_name: str) -> ModuleType:
     """
@@ -440,6 +478,37 @@ def get_config_path(app_name: str) -> Path:
 
     return config_path
 
-# cSpell:words levelname iskeyword expanduser pathlib
+def get_config_file(config_file: Path) -> Optional[configparser.ConfigParser]:
+    """
+    loads a configuration file into a new ConfigParser instance
+
+    Args:
+        config_file (Path): the path to the configuration file
+
+    Returns
+        ConfigParser instance populated with the configuration file content, or None
+        None is return when the specified file does not exist, or cannot be read for
+        various reasons.
+    """
+    config = configparser.ConfigParser()
+
+    if not config_file.is_file():
+        # config.read() silently ignores missing files. Explicit test needed to report.
+        logging.warning('Configuration file "%s" not found', config_file)
+        return None
+
+    try:
+        config.read(config_file)
+        return config
+    except PermissionError:
+        logging.error('Unable to read "%s" due to insufficient permissions.', config_file)
+    except (configparser.ParsingError, configparser.Error) as e:
+        logging.error('Error reading "%s": %s', config_file, e)
+    except Exception as e:  # pylint:disable=broad-exception-caught
+        logging.error('Unexpected error reading "%s": %s', config_file, e)
+
+    return None
+
+# cSpell:words levelname iskeyword expanduser pathlib issubset configparser
 # cSpell:ignore msecs nargs appdata
 # cSpell:allowCompoundWords true
