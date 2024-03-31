@@ -7,8 +7,8 @@ Generic tools useful for applications
 
 from types import ModuleType
 from typing import (
-    Hashable, NoReturn, Tuple, Optional, Sequence, Callable, FrozenSet,
-    Any, List, Dict, Set,
+    Hashable, NoReturn, Tuple, Optional, Sequence, Callable, TextIO, Union,
+    FrozenSet, Any, List, Dict, Set
 )
 import os
 import argparse
@@ -20,6 +20,20 @@ from threading import Lock
 import inspect
 import logging
 import importlib
+
+IniStructureType = Dict[str, Dict[str, Union[str, Dict[str, str]]]]
+
+@dataclass(frozen=True)
+class IniStr:
+    """
+    Constant strings used for storing ini configuration in a structure that can be converted
+    into an ini file format.
+    """
+    description: str = 'description'
+    settings: str = 'settings'
+    doc: str = 'doc'
+    default: str = 'default'
+    comment: str = 'comment'  # optional
 
 class ListHandler(logging.Handler):
     """Save log records to a list"""
@@ -242,11 +256,23 @@ class TriStateAction(argparse.Action):
                  values: Optional[List[str]], option_string: str = None):
         setattr(namespace, self.dest, not option_string.startswith('--no-'))
 
-def process_keyword_settings(value: str, valid_values: FrozenSet[str], negation_prefix: str = 'no-',
+def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,
+                             negation_prefix: str = 'no-',
                              raise_exception: bool = False) -> Dict[str, bool]:
     """
     Processes a comma-separated list of keywords, maintaining order and allowing for negations.
     Later entries can reverse the effect of previous ones.
+
+    Example:
+        allowed = frozenset('alpha', 'beta', 'delta', 'gamma')
+        process_keyword_settings('alpha, nogamma, beta, noalpha', allowed, negation_prefix='no')
+        gives
+        {'alpha': False, 'gamma': False, 'beta': True}
+
+        'all' is a special, always valid, keyword.
+        process_keyword_settings('all', allowed, negation_prefix='no')
+        gives
+        {'alpha': True, 'beta': True, 'delta': True, 'gamma': True}
 
     Args:
         value (str): The comma-separated string of keywords from the configuration.
@@ -256,22 +282,21 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], negation_
     Returns:
         Dict[str, bool]: A dictionary where keys are the valid keywords and values are boolean
                          indicating their enabled (True) or negated (False) status.
+
+    Raises
+        ValueError when an invalid keyword list is detected and the raise_exception flag
+            is set to True.
     """
     result = {}
     error_detected = False
     if not value:
         return result  # short cut when no keywords: prevents error treating empty string as choice
     if value == 'all':
-        # when used, 'all' must be by itself
         return {key: True for key in valid_values}
-        # for key in valid_values:
-        #     result[key] = True
-        # return result
     for choice in map(str.strip, value.split(',')):
         key = choice[len(negation_prefix):] if choice.startswith(negation_prefix) else choice
         if key in valid_values:
-            # result[key] = not choice.startswith(negation_prefix)
-            result[key] = key == choice
+            result[key] = key == choice  # True when choice is a valid keyword, False when negated.
         else:
             error_detected = True
             logging.warning('"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
@@ -279,25 +304,82 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], negation_
         raise ValueError('Invalid keyword set')
     return result
 
-def validate_attribute_names(value: str, raise_exception: bool = False) -> Set[str]:
+def update_set_keywords(target: set[str], keywords: str, valid: FrozenSet[str], **kwargs) -> None:
     """
-    Validates and processes a comma-separated list of attribute names.
+    update keyword parameters in an existing set from a comma-separated list
+    of [negated] keywords in a string.
+
+    keywords are added to the set, negated keywords are removed. Processed in the order that
+    they are in the string, so latter entries can override earlier, and any keywords will
+    override entires already in the target set.
+
+    base: set = {'a', 'b', 'c'}
+    allowed: FrozenSet = frozenset({'a', 'b', 'c', 'd', 'e'})
+    update_set_keywords(base, 'd,nob,e,nod', allowed)
+    base == {'a', 'c', 'e'}
+
+    'all' can also be used, so with
+    update_set_keywords(base, 'all', allowed)
+    base == {'a', 'b', 'c', 'd', 'e'}
+
+    Args:
+        target (set): the existing keyword set to update
+        keywords (str): comma-separated list of context keywords (possibly negated)
+        valid (Frozenset): the valid context keywords, without 'all' or negated version
+    """
+    states: Dict[str, bool] = process_keyword_settings(keywords, valid, **kwargs)
+    for key, state in states.items():
+        if state:
+            target.add(key)
+        else:
+            try:
+                target.remove(key)
+            except KeyError:
+                # Ignore if the key to remove doesn't existing in the target set
+                pass
+
+def validate_attribute_names(value: str, *, raise_exception: bool = False) -> Set[str]:
+    """
+    Creates a set of valid attribute name strings from a comma-separated list of attribute names.
+
+    Invalid attribute names are logged, and conditionally raise an exception
 
     Args:
         value (str): The comma-separated string of attribute names from the configuration.
 
     Returns:
         Set[str]: A set of validated attribute names.
+
+    Raises
+        ValueError when an invalid attribute name is detected and the raise_exception flag
+            is set to True.
     """
     entries = set(map(str.strip, value.split(',')))
     result = {ent for ent in entries if is_attr_name(ent)}
     not_attributes = entries - result
     if not_attributes:
-        logging.warning('"%s" invalid attribute names ignored', ', '.join(not_attributes))
+        logging.warning('%s invalid attribute names ignored: {%s}', len(not_attributes),
+                        trim_excess(", ".join(not_attributes), 50))
         if raise_exception:
-            raise ValueError(f'invalid attribute names: "{", ".join(not_attributes)}"')
+            raise ValueError(f'{len(not_attributes)} invalid attribute names: ' +
+                             f'"{trim_excess(", ".join(not_attributes), 50)}"')
 
     return result
+
+def trim_excess(content: str, max_length: int=100) -> str:
+    """
+    limit content to specified maximum length
+
+    Args:
+        content (str): string to limit to maximum length (in characters)
+        max_length (int): The maximum allowed width
+
+    Return
+        (str) content trimmed to a maximum of the specified length. If truncated, ellipse character
+        appended, still keeping total output to the maximum length.
+    """
+    return content[:max_length - 1] + '…' if len(content) > max_length else content
+    # return content[:max_length - 3] + '...' if len(content) > max_length else content
 
 def add_tri_state_argument(parser: argparse.ArgumentParser, argument_name: str,
                            help_text: str) -> None:
@@ -353,9 +435,10 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
             ValueError for unrecognized or invalid combinations of keywords
         NOTE:
             argparse traps the raised exceptions, and creates it's own generic message, ignoring
-            the more detailed information provided here.
+            the more detailed information that could be provided here.
         """
-        return process_keyword_settings(s, valid_choices, negation, raise_exception=True)
+        return process_keyword_settings(s, valid_choices, raise_exception=True,
+                                        negation_prefix=negation)
 
     return all_or_keys_validator
 
@@ -373,16 +456,9 @@ def attribute_names_validator(s: str) -> Set[str]:
         ValueError if an invalid attribute name is detected.
     NOTE:
         argparse traps the raised exception, and creates it's own generic message, ignoring
-        the more detailed information provided here.
+        the more detailed information that could be provided here.
     """
     return validate_attribute_names(s, raise_exception=True)
-    # attr_names = set(map(str.strip, s.split(',')))
-    # not_attr = {name for name in attr_names if not is_attr_name(name)}
-
-    # if not_attr:
-    #     raise ValueError(f"Invalid attribute name(s): {', '.join(not_attr)}")
-
-    # return attr_names
 
 def import_module(module_name: str) -> ModuleType:
     """
@@ -509,6 +585,98 @@ def get_config_file(config_file: Path) -> Optional[configparser.ConfigParser]:
 
     return None
 
+def insert_prefix(input_string: str, prefix: str = '; ') -> str:
+    '''
+    add prefix at the start of every line in a multiple line string, except for
+    blank lines.
+
+    Args:
+        input_str (str) the (possibly) multiple line string
+        prefix (str) the prefix to add to the start of every non empty line
+
+    Returns
+        (str) input_string with added prefix to all non-empty lines
+    '''
+    lines = input_string.split('\n')
+    new_lines = []
+
+    for line in lines:
+        line = line.strip()  # Remove leading/trailing whitespace
+        # Skip adding prefix to empty lines and preserve double newlines
+        new_lines.append(line if line == '' else prefix + line)
+
+    return '\n'.join(new_lines)
+
+def generate_ini_file(output: TextIO, structure: IniStructureType):
+    """
+    Generates an INI file structure and writes it to a file or stdout.
+
+    Example usage
+        structure_test = {
+            "Section1": {
+                "description": "This is section 1",
+                "settings": {
+                    "setting1": {"doc": "Documentation for setting 1", "default": "value1"},
+                    "setting2": {
+                        "doc": "Documentation for setting 2",
+                        "default": "value2",
+                        "comment": "optional comment",
+                    },
+                },
+            },
+            "Section2": {
+                "description": "This is section 2",
+                "settings": {
+                    "settingA": {"doc": "Documentation for setting A", "default": "valueA"},
+                    "settingB": {"doc": "Documentation for setting B", "default": "valueB"},
+                },
+            },
+        }
+        IniStr attributes can be used in placed of literal strings for the structure keys
+                IniStr.description: "This is section 1",
+                IniStr.settings: { …
+        generate_ini_file(sys.stdout, structure_test)
+        ; This is section 1
+        [Section1]
+        ; Documentation for setting 1
+        ; setting1 = value1
+
+        ; Documentation for setting 2
+        ; setting2 = value2 ; optional comment
+
+
+        ; This is section 2
+        [Section2]
+        ; Documentation for setting A
+        ; settingA = valueA
+
+        ; Documentation for setting B
+        ; settingB = valueB
+
+    Args:
+        output (TextIO): A file-like object where the INI content will be written.
+        structure (Dict): A dictionary defining the INI file structure.
+    """
+    c_pfx = '; '
+    for section, content in structure.items():
+        # use insert_prefix to add comment prefix to all comment context, to handle all cases
+        # where the comment text include newline characters.
+
+        # Write section description as a comment
+        output.write(f"{insert_prefix(content['description'], c_pfx)}\n")
+        output.write(f"[{section}]\n")
+        for setting, info in content['settings'].items():
+            # Write each setting's documentation and default value (commented out)
+            output.write(f"{insert_prefix(info['doc'], c_pfx)}\n")
+            optional_comment = insert_prefix(info.get('comment', ''), f' {c_pfx}')
+            output.write(f"; {setting} = {info['default']}{optional_comment}\n\n")
+
+        # Extra newline for readability between sections
+        output.write("\n")
+
+# Alternatively, writing to stderr
+# generate_ini_file(sys.stderr, structure)
+
 # cSpell:words levelname iskeyword expanduser pathlib issubset configparser
-# cSpell:ignore msecs nargs appdata
+# cSpell:ignore msecs nargs appdata noalpha, nogamma
 # cSpell:allowCompoundWords true

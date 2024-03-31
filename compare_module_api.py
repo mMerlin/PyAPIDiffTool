@@ -16,22 +16,22 @@ does not implement some of the required libraries (inspect).
 """
 
 import sys
-from typing import Union, Dict, Any, FrozenSet
+from typing import Union, Dict, Any, FrozenSet, Set
 from dataclasses import dataclass
 import argparse
 import configparser
 from pathlib import Path
 import logging
 from generic_tools import (
-    SentinelTag,
+    SentinelTag, IniStr, IniStructureType,
     add_tri_state_argument, make_all_or_keys_validator, attribute_names_validator,
-    get_config_path, get_config_file, process_keyword_settings,
-    validate_attribute_names,
+    get_config_path, get_config_file, update_set_keywords,
+    validate_attribute_names, generate_ini_file
 )
 
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
 
-@dataclass
+@dataclass(frozen=True)
 class IniKey:
     """
     keys for configuration (ini) file entries.
@@ -53,7 +53,7 @@ class IniKey:
     docstring: str = 'docstring'
     annotation: str = 'added-annotation'
 
-@dataclass
+@dataclass(frozen=True)
 class CfgKey:
     """
     keys for configuration setting entries.
@@ -83,7 +83,7 @@ class CfgKey:
     annotation_contexts: FrozenSet = frozenset({'parameter', 'return', 'scope'})
     negation_prefix: str = 'no-'
 
-@dataclass
+@dataclass(frozen=True)
 class Tag:
     """
     keys for SentinelTag instances.
@@ -102,8 +102,6 @@ class CompareModuleAPI:
         args (Namespace): Command-line arguments parsed by argparse.
     """
     APP_NAME = 'CompareModuleAPI'
-    MAIN_SECTION = 'Main'
-    CFG_KEY_SUFFIX = '_settings'
 
     def __init__(self):
         self._configuration_settings: Dict[str, ConfigurationType] = self._default_configuration()
@@ -111,8 +109,8 @@ class CompareModuleAPI:
         cmd_line_parser = self._create_command_line_parser()
         self._raw_args = cmd_line_parser.parse_args()
         print(self._raw_args)  # DEBUG
-        self._process_configuration_files()
-        self._apply_command_line_arguments_to_configuration()
+        self.process_configuration_files()
+        self.apply_command_line_arguments_to_configuration()
         print(self._configuration_settings)  # DEBUG
 
     def _default_configuration(self) -> ConfigurationType:
@@ -136,6 +134,147 @@ class CompareModuleAPI:
             CfgKey.scope: "all",
         }
         return def_cfg
+
+    def output_default_ini(self) -> None:
+        """
+        Output (to standard output) the default application configuration file with
+        embedded documentation.
+        """
+        # pylint:disable=line-too-long
+        def_reference = self._default_configuration()
+        ini_details: IniStructureType = {
+            IniKey.main: {
+                IniStr.description: '''Documented CompareModuleAPI configuration template file
+
+This provides information about configuration entry settings, including valid
+and default values.
+
+Multiple configuration files can be used. Each file modifies the state of the
+configuration left by the previous file. The first configuration file read, if it
+exists, will be from the operating system specific user application configuration
+folder. On linux, this will be ~/.config/CompareModuleAPI/CompareModuleAPI.ini
+On Windows, it will be %APPDATA%/CompareModuleAPI/CompareModuleAPI.ini
+On Mac, it will be library/Application Support/CompareModuleAPI/CompareModuleAPI.ini
+The user configuration file is not required for operation. Neither the folder
+or user configuration file are automatically created.
+
+Loading information from the user application configuration can be suppressed with
+the "--no-user-config" command line option.
+
+The next configuration read, if it exists, will be from the folder that the
+application is being run from. The current working directory. Loading information
+from the project configuration can be suppressed with the "--no-project-config"
+command line option.
+
+Additional configuration files can be specified from the command line with the
+"--config-file CONFIG_FILE" option. This can be specified multiple times. The
+file are loaded in the order the options are specified.
+
+Main section''',
+                IniStr.settings: {
+                    CfgKey.scope: {
+                        IniStr.doc: '''Set the scope of the attribute comparisons between the base and port package
+implementations. 'all' is all attribute names that can be seen with dir().
+'published' limits the comparison to attribute names that are in the 'all'
+attribute (where) that exists. Public removes dunder and private attribute
+names from 'all'.
+
+all and public are straight forward for both base and port implementations.
+published can be a little odd. Only published attribute names are considered
+in the base implementation, but all port attribute names are initially
+included for port. This is done to identify cases where an attribute published
+in base exists in port, but was not published in the port implementation. The
+reverse case will be reported as an extension in the port implementation.
+''',
+                        IniStr.default: def_reference[CfgKey.scope],
+                        IniStr.comment: 'choose one of: all, public, published'
+                    }
+                }
+            },
+            IniKey.report: {
+                IniStr.description: '''Report configuration section controls what parts of the comparison result are
+included in the final report.''',
+                IniStr.settings: {
+                    CfgKey.exact: {
+                        IniStr.doc: '''Include attribute names with exactly matching signatures in the match
+differences report.''',
+                        IniStr.default: str(def_reference[CfgKey.report][CfgKey.exact]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                    CfgKey.matched: {
+                        IniStr.doc: '''Include report section for attributes with matching names but differing
+signatures.''',
+                        IniStr.default: str(def_reference[CfgKey.report][CfgKey.matched]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                    CfgKey.not_imp: {
+                        IniStr.doc: "Include report section for attributes not implemented in the port module.",
+                        IniStr.default: str(def_reference[CfgKey.report][CfgKey.not_imp]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                    CfgKey.extensions: {
+                        IniStr.doc: '''Include report section for attributes implemented in the port
+implementation but not in the base.''',
+                        IniStr.default: str(def_reference[CfgKey.report][CfgKey.extensions]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                    CfgKey.skipped: {
+                        IniStr.doc: "Include report section for attribute names that were skipped during the comparison.",
+                        IniStr.default: str(def_reference[CfgKey.report][CfgKey.skipped]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                }
+            },
+            IniKey.ignore: {
+                IniStr.description: '''Ignore configuration section allows specifying attribute names or aspects to be
+ignored during comparison.
+
+For the entries that allow 'contexts' to be specified, 'all' enables all valid
+contexts. To disable a context (possibly previously enable by a different
+configuration file), prefix the context with 'no-'. The general format is:
+all or [no-]<context1>[,[no-]<context2>]...''',
+                IniStr.settings: {
+                    CfgKey.builtin: {
+                        IniStr.doc: '''Ignore attributes that are considered built-in functionality (common across
+many modules).''',
+                        IniStr.default: str(def_reference[CfgKey.ignore][CfgKey.builtin]),
+                        IniStr.comment: "boolean: True or False"
+                    },
+                    CfgKey.global_attr: {
+                        IniStr.doc: "Comma-separated list of attribute names to ignore in all contexts.",
+                        IniStr.default: ','.join(def_reference[CfgKey.ignore][CfgKey.global_attr]),
+                        IniStr.comment: "list of attribute names"
+                    },
+                    CfgKey.module_attr: {
+                        IniStr.doc: "Comma-separated list of attribute names to ignore when processing an module.",
+                        IniStr.default: ','.join(def_reference[CfgKey.ignore][CfgKey.module_attr]),
+                        IniStr.comment: "list of attribute names"
+                    },
+                    CfgKey.class_attr: {
+                        IniStr.doc: "Comma-separated list of attribute names to ignore when processing a class.",
+                        IniStr.default: ','.join(def_reference[CfgKey.ignore][CfgKey.class_attr]),
+                        IniStr.comment: "list of attribute names"
+                    },
+                    CfgKey.docstring: {
+                        IniStr.doc: ''''all' or a comma-separated list of contexts to ignore differences in docstring
+values.''',
+                        IniStr.default: ','.join(def_reference[CfgKey.ignore][CfgKey.docstring]),
+                        IniStr.comment: "contexts: module, class, method"
+                    },
+                    CfgKey.annotation: {
+                        IniStr.doc: ''''all' or a comma-separated list of contexts to ignore annotations that exist
+in the port implementation where none was defined for base. These are all
+related to method (or function) signatures.
+- method parameter typehint
+- method return value typehint
+- scope is for any entry in the parent class __annotation__ dictionary''',
+                        IniStr.default: ','.join(def_reference[CfgKey.ignore][CfgKey.annotation]),
+                        IniStr.comment: "contexts: parameter, return, scope"
+                    },
+                }
+            },
+        }
+        generate_ini_file(sys.stdout, ini_details)
 
     def _create_command_line_parser(self) -> argparse.ArgumentParser:
         """Creates parser for command-line arguments to configure the application."""
@@ -201,7 +340,7 @@ class CompareModuleAPI:
 
         return parser
 
-    def _process_configuration_files(self):
+    def process_configuration_files(self):
         """Handles command-line arguments related to configuration files."""
         if self._raw_args.create_config:
             self.output_default_ini()
@@ -215,42 +354,6 @@ class CompareModuleAPI:
                 if not self._load_configuration_file(Path(cfg_file)):
                     logging.error('configuration file "%s" requested on the command line '
                                 'could not be loaded', cfg_file)
-
-    def output_default_ini(self) -> None:
-        """Output (standard output) the default application configuration file"""
-        # HPD fix this
-        print(self._configuration_settings)  # need to structure output for ini file
-
-    def _user_config_path(self) -> Path:
-        """
-        get the path to the user configuration file
-
-        This needs to be smarter, to be platform agnostic? sensitive?.
-
-        returns (str) the path to the users' application configuration file
-        """
-        return get_config_path(self.APP_NAME) / f'{self.APP_NAME}.ini'
-        # return Path(os.path.expanduser(f'~/.config/{self.APP_NAME}.ini'))
-
-    def _project_config_path(self) -> Path:
-        """
-        get the path to the project configuration file
-
-        returns (str) the path to the project application configuration file
-        """
-        return Path.cwd() / f'{self.APP_NAME}.ini'
-
-    def _apply_command_line_arguments_to_configuration(self):
-        """Updates configuration settings based on command-line arguments."""
-        # Implementation to update configuration from args goes here
-
-        # for key, value in vars(self.args).items():
-        #     if value is not None:
-        #         self._configuration_settings[key] = value
-        if self._raw_args.report_exact_match is None:
-            print("Report flag was not explicitly set.")
-        else:
-            print(f"Report flag explicitly set to: {self._raw_args.report_exact_match}")
 
     def _load_configuration_file(self, file_path: Path) -> bool:
         """
@@ -330,8 +433,37 @@ class CompareModuleAPI:
         for key in CfgKey.ignore_bools:
             _set_bool_from_config(section, block, key)
         for key in CfgKey.ignore_sets:
-            configuration_set: set = block[getattr(CfgKey, key)]
-            _update_set_from_config(section, configuration_set, key)
+            _update_set_from_config(section, block, key)
+
+    def apply_command_line_arguments_to_configuration(self):
+        """Updates configuration settings based on command-line arguments."""
+        # Implementation to update configuration from args goes here
+
+        # for key, value in vars(self.args).items():
+        #     if value is not None:
+        #         self._configuration_settings[key] = value
+        if self._raw_args.report_exact_match is None:
+            print("Report flag was not explicitly set.")
+        else:
+            print(f"Report flag explicitly set to: {self._raw_args.report_exact_match}")
+
+    def _user_config_path(self) -> Path:
+        """
+        get the path to the user configuration file
+
+        This needs to be smarter, to be platform agnostic? sensitive?.
+
+        returns (str) the path to the users' application configuration file
+        """
+        return get_config_path(self.APP_NAME) / f'{self.APP_NAME}.ini'
+
+    def _project_config_path(self) -> Path:
+        """
+        get the path to the project configuration file
+
+        returns (str) the path to the project application configuration file
+        """
+        return Path.cwd() / f'{self.APP_NAME}.ini'
 
 def _set_bool_from_config(section: configparser.SectionProxy, block: Dict[str, bool],
                           key: str) -> None:
@@ -350,7 +482,8 @@ def _set_bool_from_config(section: configparser.SectionProxy, block: Dict[str, b
     if cfg_value is not SentinelTag(Tag.no_entry):
         block[getattr(CfgKey, key)] = section.getboolean(ini_key)
 
-def _update_set_from_config(section: configparser.SectionProxy, target: set[str], key: str) -> None:
+def _update_set_from_config(section: configparser.SectionProxy, block: Dict[str, Set[str]],
+                            key: str) -> None:
     """
     Updates configuration set based on a configuration file entry.
 
@@ -361,41 +494,23 @@ def _update_set_from_config(section: configparser.SectionProxy, target: set[str]
         target (set[str]): the internal configuration set to update
         key (str): the lookup key to locate the ini and configuration setting entries
     """
+    target: set = block[getattr(CfgKey, key)]
     ini_key: str = getattr(IniKey, key)
     cfg_value: str = section.get(ini_key, fallback=SentinelTag(Tag.no_entry))
     if cfg_value and cfg_value is not SentinelTag(Tag.no_entry):
         good_set: FrozenSet = getattr(CfgKey, key + CfgKey.context_suffix,
                                       SentinelTag(Tag.no_entry))
         if good_set is SentinelTag(Tag.no_entry):
-            # no validation set: everything else is attribute names
+            # no keyword validation set: everything else is attribute names
             target.update(validate_attribute_names(cfg_value))
         else:
-            _update_set_keywords(target, cfg_value, good_set)
-
-def _update_set_keywords(target: set[str], keywords: str, valid: FrozenSet[str]) -> None:
-    """
-    update keyword parameters in an existing configuration set
-
-    This uses the same logic as attribute_names_validator used to validate command line
-    arguments. With the wrapper function needed there, and the different exception handling,
-    refactoring to DRY the code looks complicated.
-
-    Args:
-        target (set): the existing keyword set to update
-        keywords (str): comma-separated list of context keywords (possibly negated)
-        valid (Frozenset): the valid context keywords, without 'all' or negated version
-    """
-    states = process_keyword_settings(keywords, valid)
-    for key, state in states.items():
-        if state:
-            target.add(key)
-        else:
-            target.remove(key)
+            update_set_keywords(target, cfg_value, good_set, negation_prefix=CfgKey.negation_prefix)
 
 
 if __name__ == "__main__":
     app = CompareModuleAPI()
 
-# cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset
-# cSpell:ignore nargs
+# pylint:disable=line-too-long
+# cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder
+# cSpell:ignore nargs appdata
 # cSpell:allowCompoundWords true
