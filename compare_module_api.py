@@ -32,6 +32,18 @@ from generic_tools import (
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
 
 @dataclass(frozen=True)
+class Part:
+    """
+    parts of configuration key attribute (field) names
+    """
+    option_type: str = 'options'
+    bool_type: str = 'bools'
+    set_type: str = 'sets'
+    choice: str = 'choices'
+    context: str = 'contexts'
+    joiner: str = '_'
+
+@dataclass(frozen=True)
 class IniKey:
     """
     keys for configuration (ini) file entries.
@@ -40,6 +52,15 @@ class IniKey:
     main: str = 'Main'
     report: str = 'Report'
     ignore: str = 'Ignore'
+    '''ini file section names'''
+    sections: FrozenSet = frozenset({'main', 'report', 'ignore'})
+    '''keys to IniKey and CfgKey attributes that hold actual lookup values for to related
+    ini sections to internal application configuration data. Each entry in IniKey.sections
+    needs matching entries in both IniKey and CfgKey. ie.
+    'main' ==> IniKey.main and CfgKey.main
+    Used for introspection using getattr(IniKey, entry) and getattr(CfgKey, entry'''
+
+    # configuration entry keys
     scope: str = 'attribute-scope'
     exact: str = 'exact-match'
     matched: str = 'matched'
@@ -52,6 +73,9 @@ class IniKey:
     class_attr: str = 'class-attributes'
     docstring: str = 'docstring'
     annotation: str = 'added-annotation'
+    '''Above attributes need corresponding entries in CfgKey containing keys to associated
+    configuration settings in the CompareModuleAPI instance ._configuration_settings
+    dictionary.'''
 
 @dataclass(frozen=True)
 class CfgKey:
@@ -59,14 +83,15 @@ class CfgKey:
     keys for configuration setting entries.
     """
     # pylint:disable=too-many-instance-attributes
-    scope: str = 'attribute_scope'
-    good_scope: FrozenSet = frozenset({'all', 'public', 'published'})
+    main: str = None
     report: str = 'report_settings'
-    report_bools: FrozenSet = frozenset({'exact', 'matched', 'not_imp', 'extensions', 'skipped'})
     ignore: str = 'ignore_settings'
-    ignore_bools: FrozenSet = frozenset({'builtin'})
-    ignore_sets: FrozenSet = frozenset({'global_attr', 'module_attr', 'class_attr', 'docstring',
-                                        'annotation'})
+    '''application configuration data block references. Keys into CompareModuleAPI
+    instance ._configuration_settings dictionary. None is the dictionary itself.
+    These correspond to entries in IniKey.sections'''
+
+    # configuration storage keys
+    scope: str = 'attribute_scope'
     exact: str = 'exact_match'
     matched: str = 'matched'
     not_imp: str = 'not_implemented'
@@ -78,10 +103,46 @@ class CfgKey:
     class_attr: str = 'class_attributes'
     docstring: str = 'docstring'
     annotation: str = 'added_annotation'
-    context_suffix: str = '_contexts'
+    '''Above attributes need corresponding entries in IniKey containing keys to associated
+    ini configuration file entries.'''
+
+    #<section>_<type>: FrozenSet = frozenset({})
+    main_options: FrozenSet = frozenset({'scope'})
+    # main_bools: FrozenSet = frozenset({})  # placeholder
+    # main_sets: FrozenSet = frozenset({})  # placeholder
+    # report_options: FrozenSet = frozenset({})  # placeholder
+    report_bools: FrozenSet = frozenset({'exact', 'matched', 'not_imp', 'extensions', 'skipped'})
+    # report_sets: FrozenSet = frozenset({})  # placeholder
+    # ignore_options: FrozenSet = frozenset({})  # placeholder
+    ignore_bools: FrozenSet = frozenset({'builtin'})
+    ignore_sets: FrozenSet = frozenset(
+        {'global_attr', 'module_attr', 'class_attr', 'docstring', 'annotation'})
+    '''Attribute names from both IniKey and CfgKey grouped by section and needed processing.
+    Every entry in the 'configuration storage keys' block of attributes should be referenced
+    exactly once in the above frozen sets.
+    Used for introspection using getattr(CfgKey, entry)'''
+
+    processing_types: FrozenSet = frozenset(
+        {Part.option_type, Part.bool_type, Part.set_type})
+    '''processing category types. Each of these can have an (optional) entry in CfgKey for
+    each configuration section.
+    #<section>_<type>: FrozenSet = frozenset({})
+    The entries here drive the processing to be done when saving configuration file values to
+    the corresponding internal application configuration setting.
+    Used for introspection using getattr(CfgKey, section_name + entry)
+    '''
+
+    # <storage_key><validation_type>: FrozenSet = frozenset({})
+    scope_choices: FrozenSet = frozenset({'all', 'public', 'published'})
+    '''valid choices for each configuration function (storage key) that must have
+    one of a fixed set of values'''
     docstring_contexts: FrozenSet = frozenset({'module', 'class', 'method'})
     annotation_contexts: FrozenSet = frozenset({'parameter', 'return', 'scope'})
+    '''keywords for each configuration function (storage key) that can be set to 'all', or
+    to a comma-separated list of keywords. Each keyword can be negated by prefixing with
+    CfgKey.negation_prefix'''
     negation_prefix: str = 'no-'
+    '''The prefix to use to reverse the sense of keyword parameters'''
 
 @dataclass(frozen=True)
 class Tag:
@@ -371,69 +432,59 @@ related to method (or function) signatures.
 
         Returns
             (bool): True if the requested file was loaded, False otherwise
+
+        See Also:
+            IniKey and CfgKey for values and usage of the referenced entries.
+            output_default_ini for information about ini entries.
         """
         config: configparser.ConfigParser = get_config_file(file_path)
         if config is None:
             return False
 
-        self._load_configuration_main(config, file_path)
-        self._load_configuration_report(config, file_path)
-        self._load_configuration_ignore(config, file_path)
+        for section_name in IniKey.sections:
+            section_key: str = getattr(IniKey, section_name)
+            if section_key not in config.sections():
+                continue
+
+            section: configparser.SectionProxy = config[section_key]
+            settings_key: str = getattr(CfgKey, section_name)
+            settings_group: dict = self._configuration_settings if settings_key is None \
+                else self._configuration_settings[settings_key]
+            for p_type in CfgKey.processing_types:
+                for entry in getattr(CfgKey, section_name + Part.joiner + p_type, []):
+                    self._process_config_case(section, settings_group, p_type, entry,
+                                              file_path)
+
         logging.info('settings loaded from "%s"', file_path)
         return True
 
-    def _load_configuration_main(self, cfg: configparser.ConfigParser, source: Path) -> None:
+    def _process_config_case(self, section: configparser.SectionProxy, settings: dict,  # pylint:disable=too-many-arguments
+                             processing: str, entry: str, file_path: Path) -> None:
         """
-        Load [Main] configuration file section data to application configuration.
+        Processes a single configuration (ini) file entry and updates the associated application
+        setting accordingly.
 
         Args:
-            cfg (ConfigParser): parser with loaded configuration file data
-            source (Path): the path to the configuration file
+            section (SectionProxy): The current INI file section being processed.
+            settings (dict): Application settings that correspond to the section.
+            processing (str): The type of processing needed for the configuration entry.
+            entry (str): The key for current configuration setting being processed. This
+                    corresponds to a field (name) in both IniKey and CfgKey, which in turn
+                    are ini section entries keys and settings keys.
+            file_path (Path): The path to the configuration file being processed, used for logging.
         """
-        if IniKey.main not in cfg.sections():
+        ini_key: str = getattr(IniKey, entry)
+        ini_value: str = section.get(ini_key, fallback=SentinelTag(Tag.no_entry))
+        if not (ini_value and ini_value is not SentinelTag(Tag.no_entry)):
             return
-        section = cfg[IniKey.main]
 
-        cfg_value = section.get(IniKey.scope, fallback=SentinelTag(Tag.no_entry))
-        if cfg_value is not SentinelTag(Tag.no_entry):
-            if cfg_value in CfgKey.good_scope:
-                self._configuration_settings[CfgKey.scope] = cfg_value
-            else:
-                logging.error('Invalid attribute-scope entry "%s" found in "%s"', cfg_value, source)
-
-    def _load_configuration_report(self, cfg: configparser.ConfigParser, _source: Path) -> None:
-        """
-        Load [Report] configuration file section data to application configuration.
-
-        Args:
-            cfg (ConfigParser): parser with loaded configuration file data
-            source (Path): the path to the configuration file
-        """
-        if IniKey.report not in cfg.sections():
-            return
-        section = cfg[IniKey.report]
-        block = self._configuration_settings[CfgKey.report]
-
-        for key in CfgKey.report_bools:
-            _set_bool_from_config(section, block, key)
-
-    def _load_configuration_ignore(self, cfg: configparser.ConfigParser, _source: Path) -> None:
-        """
-        Load [Ignore] configuration file section data to application configuration.
-
-        Args:
-            cfg (ConfigParser): parser with loaded configuration file data
-            source (Path): the path to the configuration file
-        """
-        if IniKey.ignore not in cfg.sections():
-            return
-        section = cfg[IniKey.ignore]
-        block = self._configuration_settings[CfgKey.ignore]
-
-        for key in CfgKey.ignore_bools:
-            _set_bool_from_config(section, block, key)
-        for key in CfgKey.ignore_sets:
-            _update_set_from_config(section, block, key)
+        settings_key = getattr(CfgKey, entry)
+        if processing == Part.option_type:
+            _update_option_from_string(ini_value, settings, settings_key, entry, ini_key, file_path)
+        elif processing == Part.bool_type:
+            settings[settings_key] = section.getboolean(ini_key)
+        else:  # processing == Part.set_type
+            _update_set_from_string(ini_value, settings[settings_key], entry, file_path=file_path)
 
     def apply_command_line_arguments_to_configuration(self):
         """Updates configuration settings based on command-line arguments."""
@@ -465,47 +516,52 @@ related to method (or function) signatures.
         """
         return Path.cwd() / f'{self.APP_NAME}.ini'
 
-def _set_bool_from_config(section: configparser.SectionProxy, block: Dict[str, bool],
-                          key: str) -> None:
+def _update_option_from_string(ini_value: str, settings: Dict[str, str], settings_key: str,  # pylint:disable=too-many-arguments
+                               entry: str, ini_key: str, file_path: Path) -> None:
     """
-    Sets a boolean configuration value based on a configuration file entry.
-
-    Does nothing if no matching entry is found in the section.
+    Updates a settings option from a string.
 
     Args:
-        section (SectionProxy): the configparser section with the entry
-        block (Dict[str, bool]): the internal configuration dictionary to hold the value
-        key (str): the lookup key to locate the ini and configuration setting entries
+        ini_value (str): The value read from a configuration file
+        settings (dict): Application settings block that store the specific setting.
+        settings_key (str): Key for settings entry to be updated.
+        entry (str): The key for the current configuration setting being processed. This
+                corresponds to a field (name) in both IniKey and CfgKey, which in turn
+                are ini section entries keys and settings keys.
+        ini_key (str): the key for the ini file entry, used for logging.
+        file_path (Path): The path to the configuration file being processed, used for logging.
     """
-    ini_key = getattr(IniKey, key)
-    cfg_value: str = section.get(ini_key, fallback=SentinelTag(Tag.no_entry))
-    if cfg_value is not SentinelTag(Tag.no_entry):
-        block[getattr(CfgKey, key)] = section.getboolean(ini_key)
+    # get the valid choices for 'entry'
+    allowed_options: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.choice)
+    if ini_value in allowed_options:
+        settings[settings_key] = ini_value
+    else:
+        logging.error(
+            'Invalid %s value "%s" found in "%s". Valid values are: %s',
+            ini_key, ini_value, file_path, ', '.join(allowed_options))
 
-def _update_set_from_config(section: configparser.SectionProxy, block: Dict[str, Set[str]],
-                            key: str) -> None:
+def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwargs) -> None:
     """
-    Updates configuration set based on a configuration file entry.
-
-    Does nothing if no matching entry is found in the section.
+    Updates (configuration) set based on a string from a configuration file entry.
 
     Args:
-        section (SectionProxy): the configparser section with the entry
-        target (set[str]): the internal configuration set to update
-        key (str): the lookup key to locate the ini and configuration setting entries
+        ini_value (str): The value read from a configuration file
+        target (Set[str]): The settings entry to be updated
+        entry (str): The key for the current configuration setting being processed. This
+                corresponds to a field (name) in both IniKey and CfgKey, which in turn
+                are ini section entries keys and settings keys.
+        kwargs: pass arguments through to low level methods to enhance error logging.
+                specifically source_entry and file_path for process_keyword_settings
     """
-    target: set = block[getattr(CfgKey, key)]
-    ini_key: str = getattr(IniKey, key)
-    cfg_value: str = section.get(ini_key, fallback=SentinelTag(Tag.no_entry))
-    if cfg_value and cfg_value is not SentinelTag(Tag.no_entry):
-        good_set: FrozenSet = getattr(CfgKey, key + CfgKey.context_suffix,
-                                      SentinelTag(Tag.no_entry))
-        if good_set is SentinelTag(Tag.no_entry):
-            # no keyword validation set: everything else is attribute names
-            target.update(validate_attribute_names(cfg_value))
-        else:
-            update_set_keywords(target, cfg_value, good_set, negation_prefix=CfgKey.negation_prefix)
-
+    # get the base keywords allowed for 'entry' (if it is a keywords attribute)
+    good_set: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.context,
+                                        SentinelTag(Tag.no_entry))
+    if good_set is SentinelTag(Tag.no_entry):
+        # no keyword validation set: everything else is attribute names
+        target.update(validate_attribute_names(ini_value))
+    else:
+        update_set_keywords(target, ini_value, good_set, negation_prefix=CfgKey.negation_prefix,
+                            source_entry=getattr(IniKey, entry), **kwargs)
 
 if __name__ == "__main__":
     app = CompareModuleAPI()

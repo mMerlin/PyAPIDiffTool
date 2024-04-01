@@ -256,8 +256,10 @@ class TriStateAction(argparse.Action):
                  values: Optional[List[str]], option_string: str = None):
         setattr(namespace, self.dest, not option_string.startswith('--no-'))
 
-def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,
+def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pylint:disable=too-many-arguments
                              negation_prefix: str = 'no-',
+                             file_path: Path = None,
+                             source_entry: str = None,
                              raise_exception: bool = False) -> Dict[str, bool]:
     """
     Processes a comma-separated list of keywords, maintaining order and allowing for negations.
@@ -299,7 +301,11 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,
             result[key] = key == choice  # True when choice is a valid keyword, False when negated.
         else:
             error_detected = True
-            logging.warning('"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
+            if file_path and source_entry:
+                logging.warning('Invalid %s keyword "%s" found in "%s". Valid keywords: %s',
+                                source_entry, choice, file_path, ', '.join(valid_values))
+            else:
+                logging.warning('"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
     if error_detected and raise_exception:
         raise ValueError('Invalid keyword set')
     return result
@@ -326,6 +332,7 @@ def update_set_keywords(target: set[str], keywords: str, valid: FrozenSet[str], 
         target (set): the existing keyword set to update
         keywords (str): comma-separated list of context keywords (possibly negated)
         valid (Frozenset): the valid context keywords, without 'all' or negated version
+        kwargs: pass any arguments through to process_keyword_settings.
     """
     states: Dict[str, bool] = process_keyword_settings(keywords, valid, **kwargs)
     for key, state in states.items():
