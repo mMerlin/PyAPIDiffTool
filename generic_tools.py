@@ -251,13 +251,19 @@ class SentinelTag:
         raise AttributeError("SentinelTag instances are immutable.")
 
 class TriStateAction(argparse.Action):
-    """Custom action to handle tri-state (None, True, False) using 2 arguments (--arg, --no-arg)"""
+    """Custom action to handle tri-state (None, True, False) using 2 arguments (--arg and its
+    negation).  The negation will be --{negation_prefix}arg"""
+    def __init__(self, option_strings, dest, negation_marker='no-', **kwargs):
+        self.negation_prefix = '--' + negation_marker
+        super().__init__(option_strings, dest, **kwargs)
+
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
                  values: Optional[List[str]], option_string: str = None):
-        setattr(namespace, self.dest, not option_string.startswith('--no-'))
+        # Set True or False based on whether the option string starts with the negation prefix.
+        setattr(namespace, self.dest, not option_string.startswith(self.negation_prefix))
 
 def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pylint:disable=too-many-arguments
-                             negation_prefix: str = 'no-',
+                             remove_prefix: str = 'no-',
                              file_path: Path = None,
                              source_entry: str = None,
                              raise_exception: bool = False) -> Dict[str, bool]:
@@ -267,19 +273,19 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pyl
 
     Example:
         allowed = frozenset('alpha', 'beta', 'delta', 'gamma')
-        process_keyword_settings('alpha, nogamma, beta, noalpha', allowed, negation_prefix='no')
+        process_keyword_settings('alpha, nogamma, beta, noalpha', allowed, remove_prefix='no')
         gives
         {'alpha': False, 'gamma': False, 'beta': True}
 
         'all' is a special, always valid, keyword.
-        process_keyword_settings('all', allowed, negation_prefix='no')
+        process_keyword_settings('all', allowed, remove_prefix='no')
         gives
         {'alpha': True, 'beta': True, 'delta': True, 'gamma': True}
 
     Args:
         value (str): The comma-separated string of keywords from the configuration.
         valid_values (Set[str]): A set of valid keywords without 'all' or their negated versions.
-        negation_prefix (str): Prefix indicating negation of a keyword.
+        remove_prefix (str): Prefix indicating negation of a keyword.
 
     Returns:
         Dict[str, bool]: A dictionary where keys are the valid keywords and values are boolean
@@ -296,7 +302,7 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pyl
     if value == 'all':
         return {key: True for key in valid_values}
     for choice in map(str.strip, value.split(',')):
-        key = choice[len(negation_prefix):] if choice.startswith(negation_prefix) else choice
+        key = choice[len(remove_prefix):] if choice.startswith(remove_prefix) else choice
         if key in valid_values:
             result[key] = key == choice  # True when choice is a valid keyword, False when negated.
         else:
@@ -310,7 +316,30 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pyl
         raise ValueError('Invalid keyword set')
     return result
 
-def update_set_keywords(target: set[str], keywords: str, valid: FrozenSet[str], **kwargs) -> None:
+def update_set_keywords_from_dict(target: set[str], keywords: Dict[str, bool]) -> None:
+    """
+    update keyword parameters in an existing set from a dictionary of keywords with
+    boolean values
+
+    keys for dictionary entries with a True value are added to the set. A false value
+    is removed.
+
+    Args:
+        target (set): the existing keyword set to update
+        keywords (Dict[str, bool]): dictionary with keywords to and and remove
+    """
+    for key, state in keywords.items():
+        if state:
+            target.add(key)
+        else:
+            try:
+                target.remove(key)
+            except KeyError:
+                # Ignore if the key to remove doesn't existing in the target set
+                pass
+
+def update_set_keywords_from_string(target: set[str], keywords: str, valid: FrozenSet[str],
+                                    **kwargs) -> None:
     """
     update keyword parameters in an existing set from a comma-separated list
     of [negated] keywords in a string.
@@ -335,15 +364,7 @@ def update_set_keywords(target: set[str], keywords: str, valid: FrozenSet[str], 
         kwargs: pass any arguments through to process_keyword_settings.
     """
     states: Dict[str, bool] = process_keyword_settings(keywords, valid, **kwargs)
-    for key, state in states.items():
-        if state:
-            target.add(key)
-        else:
-            try:
-                target.remove(key)
-            except KeyError:
-                # Ignore if the key to remove doesn't existing in the target set
-                pass
+    update_set_keywords_from_dict(target, states)
 
 def validate_attribute_names(value: str, *, raise_exception: bool = False) -> Set[str]:
     """
@@ -389,21 +410,32 @@ def trim_excess(content: str, max_length: int=100) -> str:
     # return content[:max_length - 3] + '...' if len(content) > max_length else content
 
 def add_tri_state_argument(parser: argparse.ArgumentParser, argument_name: str,
-                           help_text: str) -> None:
+                           help_text: str, negation: str = 'no-') -> None:
     """
-    Setup a tri-state (True, False, None) argument with help suppressed for the negated (False) case
+    Setup a tri-state (True, False, None) argument with customizable negation prefix.
+    The negated argument's help text is suppressed to avoid it appearing in the help output.
+
+    Args:
+        parser: The argument parser to which the tri-state argument is being added.
+        argument_name: The name of the argument (e.g., '--test-argument').
+        help_text: The help text for the argument.
+        negation: The prefix used for negation (default is 'no-', resulting in
+                  '--no-test-argument').
     """
     arg_name = argument_name.lstrip('--')
     dest_name = arg_name.replace('-', '_')
+    negated_arg_name = f'--{negation}{arg_name}'
     if help_text:
-        help_text += f' (negate with --no-{arg_name})'
+        help_text += f' (negate with {negated_arg_name})'
+
     # Add the primary argument with the custom action and help text.
-    parser.add_argument(argument_name, dest=dest_name, action=TriStateAction, nargs=0,
-                        help=help_text)
+    parser.add_argument(argument_name, dest=dest_name, action=TriStateAction,
+                        negation_marker=negation, nargs=0, help=help_text)
+
     # Add the negated version of the argument without help text to avoid it appearing
     # in the help output.
-    parser.add_argument(f'--no-{arg_name}', dest=dest_name, action=TriStateAction, nargs=0,
-                        help=argparse.SUPPRESS)
+    parser.add_argument(negated_arg_name, dest=dest_name, action=TriStateAction,
+                        negation_marker=negation, nargs=0, help=argparse.SUPPRESS)
 
 def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-') -> \
         Callable[[str], Dict[str, bool]]:
@@ -412,7 +444,7 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
     or a comma-separated list of keywords, which can individually be negated.
 
     The function generated by this factory maintains the order of keywords as specified by the
-    user, handling repetitions and negations accordingly.
+    user, handling repetitions and negations (removals) accordingly.
 
     Args:
         choices (Sequence[str]): A list of valid keywords excluding 'all' and their negated
@@ -445,7 +477,7 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
             the more detailed information that could be provided here.
         """
         return process_keyword_settings(s, valid_choices, raise_exception=True,
-                                        negation_prefix=negation)
+                                        remove_prefix=negation)
 
     return all_or_keys_validator
 
