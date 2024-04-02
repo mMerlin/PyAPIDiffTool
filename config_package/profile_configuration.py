@@ -11,6 +11,7 @@ creating validated configuration settings.
 """
 
 import sys
+from types import MappingProxyType
 from typing import Union, Dict, Any, FrozenSet, Set
 from dataclasses import dataclass
 from collections import namedtuple
@@ -170,34 +171,36 @@ class Tag:
     no_entry: str = 'No entry exists'
 
 class ProfileConfiguration:
-    """Compares module APIs for compatibility between different implementations.
+    """Manages setting configuration information for comparing module apis
 
-    This class provides functionality to compare the interfaces of modules, classes, and functions,
-    highlighting differences that might affect compatibility. It supports loading configuration from
-    files and command-line arguments to customize the comparison process.
+    This create a valid base (default) configuration, loads validated configuration (ini)
+    information, loads configuration data from command line arguments, then provides
+    access (as a dict) to an immutable copy of the resulting settings.
 
     Attributes:
+        _app_name (str): Application name used to look for configuration files
         _configuration_settings (dict): Stores the application's configuration settings.
+        _immutable_configuration (MappingProxy): Read only copy of configuration
         _base_module
         _port_module
-        _raw_args
-        args (Namespace): Command-line arguments parsed by argparse.
         base
         port
-        get()
     """
-    APP_NAME = 'CompareModuleAPI'
-
-    def __init__(self):
+    def __init__(self, application_name: str):
+        self._app_name: str = application_name
         self._configuration_settings: Dict[str, ConfigurationType] = self._default_configuration()
-        cmd_line_parser = self._create_command_line_parser()
-        self._raw_args = cmd_line_parser.parse_args()
-        self.process_configuration_files()
-        self.apply_command_line_arguments_to_configuration()
+        cmd_line_parser: argparse.ArgumentParser = self._create_command_line_parser()
+        cli_args: argparse.Namespace = cmd_line_parser.parse_args()
+        self._process_configuration_files(cli_args)
+        self._apply_command_line_arguments_to_configuration(cli_args)
         self._apply_settings_to_configuration()
-        self._base_module = self._raw_args.base_module_path
-        self._port_module = self._raw_args.port_module_path
-        # print(self._configuration_settings)  # DEBUG
+        self._base_module: str = cli_args.base_module_path
+        self._port_module: str = cli_args.port_module_path
+        self._immutable_configuration = MappingProxyType({
+            key: frozenset(value) if isinstance(value, set) else value
+                for key, value in self._configuration_settings.items()})
+        self._configuration_settings.clear()
+        # print(self._immutable_configuration)  # DEBUG
 
     @property
     def base(self) -> str:
@@ -209,21 +212,24 @@ class ProfileConfiguration:
         """The path to the port module"""
         return self._port_module
 
-    def get(self, key: Setting) -> Union[bool, str, set]:
-        """
-        Get a configuration setting
-
-        Args:
-            key (Setting): The enum for the name of the configuration setting
-
-        Returns The value for the setting
-            Union[bool, str, set]
-
-        Raises
-            KeyError if no configuration has been set for the requested key
-        """
-        # HPD return copies: once initialized, settings should be immutable
-        return self._configuration_settings[key.name]
+    def __getitem__(self, key):
+        return self._immutable_configuration[key]
+    def __iter__(self):
+        return iter(self._immutable_configuration)
+    def __len__(self):
+        return len(self._immutable_configuration)
+    def keys(self):
+        """pass keys request to MappingProxy instance"""
+        return self._immutable_configuration.keys()
+    def items(self):
+        """pass items request to MappingProxy instance"""
+        return self._immutable_configuration.items()
+    def values(self):
+        """pass values request to MappingProxy instance"""
+        return self._immutable_configuration.values()
+    def get(self, key, default=None):
+        """pass get request to MappingProxy instance"""
+        return self._immutable_configuration.get(key, default)
 
     def _builtin_attribute_name_exclusions(self) -> Dict[str, FrozenSet[str]]:
         """The built in attribute names to be ignored"""
@@ -242,7 +248,7 @@ class ProfileConfiguration:
 
         Merge the builtin exclusions into the active configuration settings
         """
-        if self.get(Setting.USE_BUILTIN):
+        if self._configuration_settings[Setting.USE_BUILTIN.name]:
             # The builtin exclusions have not been suppressed
             attribute_exclusions = self._builtin_attribute_name_exclusions()
             for key, value in attribute_exclusions.items():
@@ -267,7 +273,7 @@ class ProfileConfiguration:
         }
         return copy.deepcopy(def_cfg)  # make sure that 2 separate copies do not interact
 
-    def output_default_ini(self) -> None:
+    def _output_default_ini(self) -> None:
         """
         Output (to standard output) the default application configuration file with
         embedded documentation.
@@ -413,7 +419,7 @@ related to method (or function) signatures.
         parser = argparse.ArgumentParser(description='Compare module APIs.')
         parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
         parser.add_argument('--create-config', action=RunAndExitAction, nargs=0,
-                            external_method=self.output_default_ini,
+                            external_method=self._output_default_ini,
                             help='Create a configuration file with default settings and exit')
 
         parser.add_argument('--attribute-scope', choices=['all', 'public', 'published'],
@@ -480,14 +486,19 @@ related to method (or function) signatures.
 
         return parser
 
-    def process_configuration_files(self):
-        """Handles command-line arguments related to configuration files."""
-        if self._raw_args.no_user_config:
+    def _process_configuration_files(self, cli: argparse.Namespace) -> None:
+        """
+        Handles command-line arguments related to configuration files.
+
+        Args:
+            cli (Namespace): parsed command line argument data
+        """
+        if cli.no_user_config:
             self._load_configuration_file(self._user_config_path())
-        if self._raw_args.no_project_config:
+        if cli.no_project_config:
             self._load_configuration_file(self._project_config_path())
-        if self._raw_args.config_file:
-            for cfg_file in self._raw_args.config_file:
+        if cli.config_file:
+            for cfg_file in cli.config_file:
                 if not self._load_configuration_file(Path(cfg_file)):
                     logging.error('configuration file "%s" requested on the command line '
                                 'could not be loaded', cfg_file)
@@ -557,11 +568,12 @@ related to method (or function) signatures.
             _update_set_from_string(ini_value, self._configuration_settings[entry_keys.settings],
                                     entry, file_path=file_path)
 
-    def apply_command_line_arguments_to_configuration(self):
+    def _apply_command_line_arguments_to_configuration(self, cli: argparse.Namespace) -> None:
         """
         Merge settings from command line arguments
 
         Args:
+            cli (Namespace): parsed command line argument data
             file_path (Path) the path to the configuration file
 
         See Also:
@@ -573,18 +585,19 @@ related to method (or function) signatures.
                 for entry in getattr(CfgKey, group_name + Part.joiner + p_type, []):
                     # default '[]' value above allows easy skipping of processing sets that
                     # do not exist
-                    self._get_cli_setting(p_type, entry)
+                    self._get_cli_setting(cli, p_type, entry)
 
-    def _get_cli_setting(self, processing: str, entry: str) -> None:
+    def _get_cli_setting(self, cli: argparse.Namespace, processing: str, entry: str) -> None:
         """
         Update a single internal setting from the matching command line argument.
 
         Args:
+            cli (Namespace): parsed command line argument data
             processing (str): The type of processing needed for the settings entry.
             entry (str): The key (name) for current configuration setting being processed.
         """
         entry_keys: SettingKeys = getattr(CfgKey, entry)
-        cli_value = getattr(self._raw_args, entry_keys.cli)
+        cli_value = getattr(cli, entry_keys.cli)
         if cli_value is None:
             return  # argument was not specified on the command line
 
@@ -621,7 +634,7 @@ related to method (or function) signatures.
 
         returns (str) the path to the users' application configuration file
         """
-        return get_config_path(self.APP_NAME) / f'{self.APP_NAME}.ini'
+        return get_config_path(self._app_name) / f'{self._app_name}.ini'
 
     def _project_config_path(self) -> Path:
         """
@@ -629,7 +642,7 @@ related to method (or function) signatures.
 
         returns (str) the path to the project application configuration file
         """
-        return Path.cwd() / f'{self.APP_NAME}.ini'
+        return Path.cwd() / f'{self._app_name}.ini'
 
     def _update_option_from_string(self, ini_value: str, entry: str, file_path: Path) -> None:
         """
@@ -672,7 +685,7 @@ def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwar
             remove_prefix=Part.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
 
 if __name__ == "__main__":
-    app = ProfileConfiguration()
+    app = ProfileConfiguration('TestAppConfig')
 
 # pylint:disable=line-too-long
 # cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder

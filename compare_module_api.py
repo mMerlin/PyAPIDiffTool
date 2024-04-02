@@ -27,14 +27,16 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         _configuration_settings (dict): Stores the application's configuration settings.
         args (Namespace): Command-line arguments parsed by argparse.
     """
+    APP_NAME: str = 'CompareModuleAPI'
+
     def __init__(self):
-        self.settings = ProfileConfiguration()
+        self.settings = ProfileConfiguration(self.APP_NAME)
         # self.base_module = self.settings.get(Setting.BASE_MODULE_PATH)
         # self.port_module = self.settings.get(Setting.PORT_MODULE_PATH)
         self.base_module = self.settings.base
         self.port_module = self.settings.port
-        _scope = self.settings.get(Setting.SCOPE)
-        print(self.settings._configuration_settings)  # DEBUG
+        _scope = self.settings[Setting.SCOPE.name]
+        print(self.settings.keys())  # DEBUG
 
 
 if __name__ == "__main__":
