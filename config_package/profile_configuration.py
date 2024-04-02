@@ -2,16 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-`compare module interfaces`
+`manage configuration for comparing module interfaces`
 ==================
 
-Compare the visible api interface for different modules.
-
-Written to see differences in CircuitPython specific module interfaces
-compared to the standard cPython libraries.
-
-This needs to run from cPython for its intended purpose. CircuitPython
-does not implement some of the required libraries (inspect).
+Load configuration (ini) file content and command line argument data
+creating validated configuration settings.
 
 """
 
@@ -19,7 +14,6 @@ import sys
 from typing import Union, Dict, Any, FrozenSet, Set
 from dataclasses import dataclass
 from collections import namedtuple
-from enum import Enum, auto
 import argparse
 import configparser
 import copy
@@ -31,6 +25,7 @@ from generic_tools import (
     attribute_names_validator, get_config_path, get_config_file, update_set_keywords_from_string,
     update_set_keywords_from_dict, validate_attribute_names, generate_ini_file
 )
+from .setting_enum import Setting
 
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
 SettingKeys = namedtuple('SettingKeys', ['settings', 'ini', 'cli'])
@@ -40,22 +35,6 @@ settings: the internal configuration dictionary key
 ini: the key in an ini configuration file
 cli: the key to parsed command line argument information
 '''
-
-class Setting(Enum):
-    """settings that can be accessed from internal configuration"""
-    SCOPE = auto()
-    REPORT_EXACT_MATCH = auto()
-    REPORT_MATCHED = auto()
-    REPORT_NOT_IMPLEMENTED = auto()
-    REPORT_EXTENSION = auto()
-    REPORT_SKIPPED = auto()
-    USE_BUILTIN = auto()
-    IGNORE_MODULE_ATTRIBUTES = auto()
-    IGNORE_GLOBAL_ATTRIBUTES = auto()
-    IGNORE_CLASS_ATTRIBUTES = auto()
-    IGNORE_DOCSTRING = auto()
-    IGNORE_ADDED_ANNOTATION = auto()
-    # Add more configuration setting keys as needed
 
 @dataclass(frozen=True)
 class Part:
@@ -190,7 +169,7 @@ class Tag:
     """
     no_entry: str = 'No entry exists'
 
-class CompareModuleAPI:
+class ProfileConfiguration:
     """Compares module APIs for compatibility between different implementations.
 
     This class provides functionality to compare the interfaces of modules, classes, and functions,
@@ -199,7 +178,13 @@ class CompareModuleAPI:
 
     Attributes:
         _configuration_settings (dict): Stores the application's configuration settings.
+        _base_module
+        _port_module
+        _raw_args
         args (Namespace): Command-line arguments parsed by argparse.
+        base
+        port
+        get()
     """
     APP_NAME = 'CompareModuleAPI'
 
@@ -212,7 +197,33 @@ class CompareModuleAPI:
         self._apply_settings_to_configuration()
         self._base_module = self._raw_args.base_module_path
         self._port_module = self._raw_args.port_module_path
-        print(self._configuration_settings)  # DEBUG
+        # print(self._configuration_settings)  # DEBUG
+
+    @property
+    def base(self) -> str:
+        """The path to the base module"""
+        return self._base_module
+
+    @property
+    def port(self) -> str:
+        """The path to the port module"""
+        return self._port_module
+
+    def get(self, key: Setting) -> Union[bool, str, set]:
+        """
+        Get a configuration setting
+
+        Args:
+            key (Setting): The enum for the name of the configuration setting
+
+        Returns The value for the setting
+            Union[bool, str, set]
+
+        Raises
+            KeyError if no configuration has been set for the requested key
+        """
+        # HPD return copies: once initialized, settings should be immutable
+        return self._configuration_settings[key.name]
 
     def _builtin_attribute_name_exclusions(self) -> Dict[str, FrozenSet[str]]:
         """The built in attribute names to be ignored"""
@@ -639,23 +650,6 @@ related to method (or function) signatures.
                 'Invalid %s value "%s" found in "%s". Valid values are: %s',
                 keys_source.ini, ini_value, file_path, ', '.join(allowed_options))
 
-    def get(self, key: Setting) -> Union[bool, str, set]:
-        """
-        Get a configuration setting
-
-        Args:
-            key (Setting): The enum for the name of the configuration setting
-
-        Returns The value for the setting
-            Union[bool, str, set]
-
-        Raises
-            KeyError if no configuration has been set for the requested key
-                - really an application logic error. Only existing keys should
-                  ever be requested.
-        """
-        return self._configuration_settings[key.name]
-
 def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwargs) -> None:
     """
     Updates (configuration) set based on a string from a configuration file entry.
@@ -678,7 +672,7 @@ def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwar
             remove_prefix=Part.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
 
 if __name__ == "__main__":
-    app = CompareModuleAPI()
+    app = ProfileConfiguration()
 
 # pylint:disable=line-too-long
 # cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder
