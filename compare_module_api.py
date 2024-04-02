@@ -19,6 +19,7 @@ import sys
 from typing import Union, Dict, Any, FrozenSet, Set
 from dataclasses import dataclass
 from collections import namedtuple
+from enum import Enum, auto
 import argparse
 import configparser
 import copy
@@ -40,17 +41,50 @@ ini: the key in an ini configuration file
 cli: the key to parsed command line argument information
 '''
 
+class Setting(Enum):
+    """settings that can be accessed from internal configuration"""
+    SCOPE = auto()
+    REPORT_EXACT_MATCH = auto()
+    REPORT_MATCHED = auto()
+    REPORT_NOT_IMPLEMENTED = auto()
+    REPORT_EXTENSION = auto()
+    REPORT_SKIPPED = auto()
+    USE_BUILTIN = auto()
+    IGNORE_MODULE_ATTRIBUTES = auto()
+    IGNORE_GLOBAL_ATTRIBUTES = auto()
+    IGNORE_CLASS_ATTRIBUTES = auto()
+    IGNORE_DOCSTRING = auto()
+    IGNORE_ADDED_ANNOTATION = auto()
+    # Add more configuration setting keys as needed
+
 @dataclass(frozen=True)
 class Part:
     """
     parts of configuration key attribute (field) names
     """
+    # pylint:disable=too-many-instance-attributes
     option_type: str = 'options'
     bool_type: str = 'bools'
     set_type: str = 'sets'
     choice: str = 'choices'
     context: str = 'contexts'
     joiner: str = '_'
+    negation_prefix: str = 'no'
+    '''The prefix to use to reverse the sense of boolean cli arguments'''
+    remove_prefix: str = 'no-'
+    '''The prefix to use to undo or remove a keyword element from a set'''
+
+@dataclass(frozen=True)
+class IniKey:
+    """
+    keys for configuration (ini) file entries.
+    """
+    main: str = 'Main'
+    report: str = 'Report'
+    ignore: str = 'Ignore'
+    sections: FrozenSet = frozenset({'main', 'report', 'ignore'})
+    '''Keys to other IniKey fields that hold actual lookup values for the related ini sections.
+    Used for introspection with getattr(IniKey, set_entry)'''
 
 @dataclass(frozen=True)
 class CfgKey:
@@ -58,53 +92,77 @@ class CfgKey:
     keys for configuration setting entries.
     """
     # pylint:disable=too-many-instance-attributes
-    main: SettingKeys = SettingKeys(settings=None, ini='Main', cli=None)
-    report: SettingKeys = SettingKeys(settings='report_settings', ini='Report', cli=None)
-    ignore: SettingKeys = SettingKeys(settings='ignore_settings', ini='Ignore', cli=None)
-    sections: FrozenSet = frozenset({'main', 'report', 'ignore'})
-    '''Keys to other CfgKey fields that hold actual lookup values for the related
-    internal settings and ini sections.
-    Used for introspection with getattr(CfgKey, set_entry).settings and .ini'''
 
     # configuration storage keys
-    scope: SettingKeys = SettingKeys(       settings='attribute_scope',
+    scope: SettingKeys = SettingKeys(       settings=Setting.SCOPE.name,
                                                 ini='attribute-scope',
                                                 cli='attribute_scope')
-    exact: SettingKeys = SettingKeys(       settings='exact_match',
+    exact: SettingKeys = SettingKeys(       settings=Setting.REPORT_EXACT_MATCH.name,
                                                 ini='exact-match',
                                                 cli='report_exact_match')
-    matched: SettingKeys = SettingKeys(     settings='matched',
+    matched: SettingKeys = SettingKeys(     settings=Setting.REPORT_MATCHED.name,
                                                 ini='matched',
                                                 cli='report_matched')
-    not_imp: SettingKeys = SettingKeys(     settings='not_implemented',
+    not_imp: SettingKeys = SettingKeys(     settings=Setting.REPORT_NOT_IMPLEMENTED.name,
                                                 ini='not-implemented',
                                                 cli='report_not_implemented')
-    extensions: SettingKeys = SettingKeys(  settings='extensions',
+    extensions: SettingKeys = SettingKeys(  settings=Setting.REPORT_EXTENSION.name,
                                                 ini='extensions',
                                                 cli='report_extensions')
-    skipped: SettingKeys = SettingKeys(     settings='skipped',
+    skipped: SettingKeys = SettingKeys(     settings=Setting.REPORT_SKIPPED.name,
                                                 ini='skipped',
                                                 cli='report_skipped')
-    builtin: SettingKeys = SettingKeys(     settings='use_builtin',
+    builtin: SettingKeys = SettingKeys(     settings=Setting.USE_BUILTIN.name,
                                                 ini='builtin-filter',
                                                 cli='use_builtin_filters')
-    global_attr: SettingKeys = SettingKeys( settings='global_attributes',
+    global_attr: SettingKeys = SettingKeys( settings=Setting.IGNORE_GLOBAL_ATTRIBUTES.name,
                                                 ini='global-attributes',
                                                 cli='ignore_global_attributes')
-    module_attr: SettingKeys = SettingKeys( settings='module_attributes',
+    module_attr: SettingKeys = SettingKeys( settings=Setting.IGNORE_MODULE_ATTRIBUTES.name,
                                                 ini='module-attributes',
                                                 cli='ignore_module_attributes')
-    class_attr: SettingKeys = SettingKeys(  settings='class_attributes',
+    class_attr: SettingKeys = SettingKeys(  settings=Setting.IGNORE_CLASS_ATTRIBUTES.name,
                                                 ini='class-attributes',
                                                 cli='ignore_class_attributes')
-    docstring: SettingKeys = SettingKeys(   settings='docstring',
+    docstring: SettingKeys = SettingKeys(   settings=Setting.IGNORE_DOCSTRING.name,
                                                 ini='docstring',
                                                 cli='ignore_docstring')
-    annotation: SettingKeys = SettingKeys(  settings='added_annotation',
+    annotation: SettingKeys = SettingKeys(  settings=Setting.IGNORE_ADDED_ANNOTATION.name,
                                                 ini='added-annotation',
                                                 cli='ignore_added_annotations')
     '''Above attributes associate internal configuration settings with ini file entries
     and command line arguments'''
+
+    # <storage_key>_<validation_type>: FrozenSet = frozenset({})
+    scope_choices: FrozenSet = frozenset({'all', 'public', 'published'})
+    '''valid choices for each configuration function (storage key) that must have
+    one of a fixed set of values'''
+    docstring_contexts: FrozenSet = frozenset({'module', 'class', 'method'})
+    annotation_contexts: FrozenSet = frozenset({'parameter', 'return', 'scope'})
+    '''keywords for each configuration function (storage key) that can be set to 'all', or
+    to a comma-separated list of keywords. Each keyword can be negated by prefixing with
+    Part.remove_prefix
+
+    Above attributes are found through introspection using
+      getattr(CfgKey, <storage_key> + Part.joiner + <validation>)
+    Validation is one of Part.choice or Part.context
+    '''
+
+@dataclass(frozen=True)
+class PrcKey:
+    """
+    keys for processing configuration information.
+    """
+    processing_types: FrozenSet = frozenset(
+        {Part.option_type, Part.bool_type, Part.set_type})
+    '''processing category types. Each of these can have an (optional) entry in PrcKey for
+    each configuration section.
+    #<section>_<type>: FrozenSet = frozenset({})
+    The entries there drive the processing to be done when saving configuration file and
+    command line argument values to the corresponding internal application configuration
+    setting.
+    Used by introspection using getattr(PrcKey, section_name + Part.joiner + entry)
+    '''
 
     #<section>_<type>: FrozenSet = frozenset({})
     main_options: FrozenSet = frozenset({'scope'})
@@ -117,38 +175,13 @@ class CfgKey:
     ignore_bools: FrozenSet = frozenset({'builtin'})
     ignore_sets: FrozenSet = frozenset(
         {'global_attr', 'module_attr', 'class_attr', 'docstring', 'annotation'})
-    '''SettingsKeys Attribute names grouped by section and needed processing.
+    '''SettingsKeys attribute names grouped by section and needed processing.
     Every CfgKey field in the configuration storage keys block should be referenced
     exactly once in the above frozen sets.
-    Used for introspection using getattr(CfgKey, set_entry)
+    Used for introspection using getattr(PrcKey, set_entry)
     Found by introspection by building the field name from «section»_«processing». 'section'
-    is each entry in CfgKey.sections, 'processing is each entry in CfgKey.processing_types.
+    is each entry in IniKey.sections, 'processing is each entry in PrcKey.processing_types.
     '''
-
-    processing_types: FrozenSet = frozenset(
-        {Part.option_type, Part.bool_type, Part.set_type})
-    '''processing category types. Each of these can have an (optional) entry in CfgKey for
-    each configuration section.
-    #<section>_<type>: FrozenSet = frozenset({})
-    The entries here drive the processing to be done when saving configuration file and
-    command line argument values to the corresponding internal application configuration
-    setting.
-    Used by introspection using getattr(CfgKey, section_name + Part.joiner + entry)
-    '''
-
-    # <storage_key><validation_type>: FrozenSet = frozenset({})
-    scope_choices: FrozenSet = frozenset({'all', 'public', 'published'})
-    '''valid choices for each configuration function (storage key) that must have
-    one of a fixed set of values'''
-    docstring_contexts: FrozenSet = frozenset({'module', 'class', 'method'})
-    annotation_contexts: FrozenSet = frozenset({'parameter', 'return', 'scope'})
-    '''keywords for each configuration function (storage key) that can be set to 'all', or
-    to a comma-separated list of keywords. Each keyword can be negated by prefixing with
-    CfgKey.remove_prefix'''
-    negation_prefix: str = 'no'
-    '''The prefix to use to reverse the sense of boolean cli arguments'''
-    remove_prefix: str = 'no-'
-    '''The prefix to use to undo or remove a keyword element from a set'''
 
 @dataclass(frozen=True)
 class Tag:
@@ -172,13 +205,13 @@ class CompareModuleAPI:
 
     def __init__(self):
         self._configuration_settings: Dict[str, ConfigurationType] = self._default_configuration()
-        # Parse arguments related to configuration files first
         cmd_line_parser = self._create_command_line_parser()
         self._raw_args = cmd_line_parser.parse_args()
-        print(self._raw_args)  # DEBUG
         self.process_configuration_files()
         self.apply_command_line_arguments_to_configuration()
         self._apply_settings_to_configuration()
+        self._base_module = self._raw_args.base_module_path
+        self._port_module = self._raw_args.port_module_path
         print(self._configuration_settings)  # DEBUG
 
     def _builtin_attribute_name_exclusions(self) -> Dict[str, FrozenSet[str]]:
@@ -198,34 +231,30 @@ class CompareModuleAPI:
 
         Merge the builtin exclusions into the active configuration settings
         """
-        if self._configuration_settings[CfgKey.ignore.settings][CfgKey.builtin.settings]:
+        if self.get(Setting.USE_BUILTIN):
             # The builtin exclusions have not been suppressed
             attribute_exclusions = self._builtin_attribute_name_exclusions()
             for key, value in attribute_exclusions.items():
-                target: set = self._configuration_settings[CfgKey.ignore.settings][key]
+                target: set = self._configuration_settings[key]
                 target.update(value)
 
     def _default_configuration(self) -> ConfigurationType:
         """The builtin base (default) configuration settings"""
         def_cfg: Dict[str, ConfigurationType] = {
-            CfgKey.report.settings: {
-                CfgKey.exact.settings: False,
-                CfgKey.matched.settings: False,
-                CfgKey.not_imp.settings: False,
-                CfgKey.extensions.settings: False,
-                CfgKey.skipped.settings: False,
-            },
-            CfgKey.ignore.settings: {
-                CfgKey.builtin.settings: True,
-                CfgKey.global_attr.settings: set(),
-                CfgKey.module_attr.settings: set(),
-                CfgKey.class_attr.settings: set(),
-                CfgKey.docstring.settings: set(),
-                CfgKey.annotation.settings: set(),
-            },
             CfgKey.scope.settings: "all",
+            CfgKey.exact.settings: False,
+            CfgKey.matched.settings: False,
+            CfgKey.not_imp.settings: False,
+            CfgKey.extensions.settings: False,
+            CfgKey.skipped.settings: False,
+            CfgKey.builtin.settings: True,
+            CfgKey.global_attr.settings: set(),
+            CfgKey.module_attr.settings: set(),
+            CfgKey.class_attr.settings: set(),
+            CfgKey.docstring.settings: set(),
+            CfgKey.annotation.settings: set(),
         }
-        return copy.deepcopy(def_cfg)
+        return copy.deepcopy(def_cfg)  # make sure that 2 separate copies do not interact
 
     def output_default_ini(self) -> None:
         """
@@ -235,7 +264,7 @@ class CompareModuleAPI:
         # pylint:disable=line-too-long
         def_reference = self._default_configuration()
         ini_details: IniStructureType = {
-            CfgKey.main.ini: {
+            IniKey.main: {
                 IniStr.description: '''Documented CompareModuleAPI configuration template file
 
 This provides information about configuration entry settings, including valid
@@ -282,74 +311,74 @@ reverse case will be reported as an extension in the port implementation.''',
                     }
                 }
             },
-            CfgKey.report.ini: {
+            IniKey.report: {
                 IniStr.description: '''Report configuration section controls what parts of the comparison result are
 included in the final report.''',
                 IniStr.settings: {
                     CfgKey.exact.settings: {
                         IniStr.doc: '''Include attribute names with exactly matching signatures in the match
 differences report.''',
-                        IniStr.default: str(def_reference[CfgKey.report.settings][CfgKey.exact.settings]),
+                        IniStr.default: str(def_reference[CfgKey.exact.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                     CfgKey.matched.settings: {
                         IniStr.doc: '''Include report section for attributes with matching names but differing
 signatures.''',
-                        IniStr.default: str(def_reference[CfgKey.report.settings][CfgKey.matched.settings]),
+                        IniStr.default: str(def_reference[CfgKey.matched.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                     CfgKey.not_imp.settings: {
                         IniStr.doc: "Include report section for attributes not implemented in the port module.",
-                        IniStr.default: str(def_reference[CfgKey.report.settings][CfgKey.not_imp.settings]),
+                        IniStr.default: str(def_reference[CfgKey.not_imp.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                     CfgKey.extensions.settings: {
                         IniStr.doc: '''Include report section for attributes implemented in the port
 implementation but not in the base.''',
-                        IniStr.default: str(def_reference[CfgKey.report.settings][CfgKey.extensions.settings]),
+                        IniStr.default: str(def_reference[CfgKey.extensions.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                     CfgKey.skipped.settings: {
                         IniStr.doc: "Include report section for attribute names that were skipped during the comparison.",
-                        IniStr.default: str(def_reference[CfgKey.report.settings][CfgKey.skipped.settings]),
+                        IniStr.default: str(def_reference[CfgKey.skipped.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                 }
             },
-            CfgKey.ignore.ini: {
+            IniKey.ignore: {
                 IniStr.description: f'''Ignore configuration section allows specifying attribute names or aspects to be
 ignored during comparison.
 
 For the entries that allow 'contexts' to be specified, 'all' enables all valid
 contexts. To disable a context (possibly previously enable by a different
-configuration file), prefix the context with '{CfgKey.remove_prefix}'. The general format is:
-all or [{CfgKey.remove_prefix}]<context1>[,[{CfgKey.remove_prefix}]<context2>]...''',
+configuration file), prefix the context with '{Part.remove_prefix}'. The general format is:
+all or [{Part.remove_prefix}]<context1>[,[{Part.remove_prefix}]<context2>]...''',
                 IniStr.settings: {
                     CfgKey.builtin.settings: {
                         IniStr.doc: '''Include the application builtin attribute names in the context specific
 exclusions (common across many modules).''',
-                        IniStr.default: str(def_reference[CfgKey.ignore.settings][CfgKey.builtin.settings]),
+                        IniStr.default: str(def_reference[CfgKey.builtin.settings]),
                         IniStr.comment: "boolean: True or False"
                     },
                     CfgKey.global_attr.settings: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore in all contexts.",
-                        IniStr.default: ','.join(def_reference[CfgKey.ignore.settings][CfgKey.global_attr.settings]),
+                        IniStr.default: ','.join(def_reference[CfgKey.global_attr.settings]),
                         IniStr.comment: "list of attribute names"
                     },
                     CfgKey.module_attr.settings: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore when processing an module.",
-                        IniStr.default: ','.join(def_reference[CfgKey.ignore.settings][CfgKey.module_attr.settings]),
+                        IniStr.default: ','.join(def_reference[CfgKey.module_attr.settings]),
                         IniStr.comment: "list of attribute names"
                     },
                     CfgKey.class_attr.settings: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore when processing a class.",
-                        IniStr.default: ','.join(def_reference[CfgKey.ignore.settings][CfgKey.class_attr.settings]),
+                        IniStr.default: ','.join(def_reference[CfgKey.class_attr.settings]),
                         IniStr.comment: "list of attribute names"
                     },
                     CfgKey.docstring.settings: {
                         IniStr.doc: ''''all' or a comma-separated list of contexts to ignore differences in docstring
 values.''',
-                        IniStr.default: ','.join(def_reference[CfgKey.ignore.settings][CfgKey.docstring.settings]),
+                        IniStr.default: ','.join(def_reference[CfgKey.docstring.settings]),
                         IniStr.comment: "contexts: module, class, method"
                     },
                     CfgKey.annotation.settings: {
@@ -359,7 +388,7 @@ related to method (or function) signatures.
 - method parameter typehint
 - method return value typehint
 - scope is for any entry in the parent class __annotation__ dictionary''',
-                        IniStr.default: ','.join(def_reference[CfgKey.ignore.settings][CfgKey.annotation.settings]),
+                        IniStr.default: ','.join(def_reference[CfgKey.annotation.settings]),
                         IniStr.comment: "contexts: parameter, return, scope"
                     },
                 }
@@ -380,10 +409,10 @@ related to method (or function) signatures.
                             help='Scope of attributes to compare.')
         add_tri_state_argument(parser, '--report-exact-match',
                                'Include attributes with exact matches in report.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
         add_tri_state_argument(parser, '--use-builtin-filters',
                                'Include builtin attribute names in context exclusions.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
         parser.add_argument(
             '--ignore-module-attributes', metavar='MODULE_ATTRIBUTES',
             type=attribute_names_validator,
@@ -401,28 +430,28 @@ related to method (or function) signatures.
             'Surround list with quotes if spaces included after commas.')
         parser.add_argument(
             '--ignore-docstring', metavar='CONTEXTS',
-            type=make_all_or_keys_validator(CfgKey.docstring_contexts, negation=CfgKey.remove_prefix),
+            type=make_all_or_keys_validator(CfgKey.docstring_contexts, negation=Part.remove_prefix),
             help="Specify contexts to ignore docstring changes in: 'all' or comma-separated list "
-            f"of contexts {{{', '.join(CfgKey.docstring_contexts)}}}. Use '{CfgKey.remove_prefix}<context>' to exclude (not ignore). "
+            f"of contexts {{{', '.join(CfgKey.docstring_contexts)}}}. Use '{Part.remove_prefix}<context>' to exclude (not ignore). "
             'Surround list with quotes if spaces included after commas.')
         parser.add_argument(
             '--ignore-added-annotations', metavar='CONTEXTS',
-            type=make_all_or_keys_validator(CfgKey.annotation_contexts, negation=CfgKey.remove_prefix),
+            type=make_all_or_keys_validator(CfgKey.annotation_contexts, negation=Part.remove_prefix),
             help="Specify contexts to ignore added annotations: 'all' or comma-separated list of "
-            f"contexts {{{', '.join(CfgKey.annotation_contexts)}}}. Use '{CfgKey.remove_prefix}<context>' to exclude (not ignore). "
+            f"contexts {{{', '.join(CfgKey.annotation_contexts)}}}. Use '{Part.remove_prefix}<context>' to exclude (not ignore). "
             'Surround list with quotes if spaces included after commas.')
         add_tri_state_argument(parser, '--report-matched',
                                'Generate report for differences in matched attributes.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
         add_tri_state_argument(parser, '--report-not-implemented',
                                'Generate report for attributes not implemented in the port.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
         add_tri_state_argument(parser, '--report-extensions',
                                'Generate report for extensions implemented in the port.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
         add_tri_state_argument(parser, '--report-skipped',
                                'Generate report for attributes that were skipped.',
-                               CfgKey.negation_prefix)
+                               Part.negation_prefix)
 
         # Configuration file arguments
         parser.add_argument('--config-file', action='append',
@@ -432,10 +461,10 @@ related to method (or function) signatures.
         parser.add_argument('--no-project-config', action='store_false',
                             help='Do not load the project configuration file.')
 
-        parser.add_argument('base-module-path', metavar='BASE', type=validate_module_path,
+        parser.add_argument('base_module_path', type=validate_module_path,
             help='Dot notation path for the base module (e.g., "os.path").')
 
-        parser.add_argument('port-module-path', metavar='PORT' ,type=validate_module_path,
+        parser.add_argument('port_module_path', type=validate_module_path,
             help='Dot notation path for the port module (e.g., "mypackage.mymodule").')
 
         return parser
@@ -477,25 +506,22 @@ related to method (or function) signatures.
         if config is None:
             return False
 
-        for group_name in CfgKey.sections:
-            section_keys: SettingKeys = getattr(CfgKey, group_name)
-            if section_keys.ini not in config.sections():
+        for group_name in IniKey.sections:
+            section_key: str = getattr(IniKey, group_name)
+            if section_key not in config.sections():
                 continue
 
-            config_section: configparser.SectionProxy = config[section_keys.ini]
-            settings_group: dict = self._configuration_settings if section_keys.settings is None \
-                else self._configuration_settings[section_keys.settings]
-            for p_type in CfgKey.processing_types:
-                for entry in getattr(CfgKey, group_name + Part.joiner + p_type, []):
+            config_section: configparser.SectionProxy = config[section_key]
+            for p_type in PrcKey.processing_types:
+                for entry in getattr(PrcKey, group_name + Part.joiner + p_type, []):
                     # default '[]' value above allows easy skipping of processing sets that
                     # do not exist
-                    self._process_config_case(config_section, settings_group, p_type, entry,
-                                              file_path)
+                    self._process_config_case(config_section, p_type, entry, file_path)
 
         logging.info('settings loaded from "%s"', file_path)
         return True
 
-    def _process_config_case(self, section: configparser.SectionProxy, settings: dict,  # pylint:disable=too-many-arguments
+    def _process_config_case(self, section: configparser.SectionProxy,
                              processing: str, entry: str, file_path: Path) -> None:
         """
         Processes a single configuration (ini) file entry and updates the associated application
@@ -503,7 +529,6 @@ related to method (or function) signatures.
 
         Args:
             section (SectionProxy): The current INI file section being processed.
-            settings (dict): Application settings that correspond to the section.
             processing (str): The type of processing needed for the configuration entry.
             entry (str): The key (name) for current configuration setting being processed.
             file_path (Path): The path to the configuration file being processed, used for logging.
@@ -514,12 +539,12 @@ related to method (or function) signatures.
             return
 
         if processing == Part.option_type:
-            _update_option_from_string(ini_value, settings, entry, file_path=file_path)
+            self._update_option_from_string(ini_value, entry, file_path=file_path)
         elif processing == Part.bool_type:
-            settings[entry_keys.settings] = section.getboolean(entry_keys.ini)
+            self._configuration_settings[entry_keys.settings] = section.getboolean(entry_keys.ini)
         else:  # processing == Part.set_type
-            _update_set_from_string(ini_value, settings[entry_keys.settings], entry,
-                                    file_path=file_path)
+            _update_set_from_string(ini_value, self._configuration_settings[entry_keys.settings],
+                                    entry, file_path=file_path)
 
     def apply_command_line_arguments_to_configuration(self):
         """
@@ -532,22 +557,18 @@ related to method (or function) signatures.
             CfgKey for values and usage of the referenced entries.
             output_default_ini for information about ini entries.
         """
-        for group_name in CfgKey.sections:
-            section_keys: SettingKeys = getattr(CfgKey, group_name)
-            settings_group: dict = self._configuration_settings if section_keys.settings is None \
-                else self._configuration_settings[section_keys.settings]
-            for p_type in CfgKey.processing_types:
+        for group_name in IniKey.sections:
+            for p_type in PrcKey.processing_types:
                 for entry in getattr(CfgKey, group_name + Part.joiner + p_type, []):
                     # default '[]' value above allows easy skipping of processing sets that
                     # do not exist
-                    self._get_cli_setting(settings_group, p_type, entry)
+                    self._get_cli_setting(p_type, entry)
 
-    def _get_cli_setting(self, settings: dict, processing: str, entry: str) -> None:
+    def _get_cli_setting(self, processing: str, entry: str) -> None:
         """
         Update a single internal setting from the matching command line argument.
 
         Args:
-            settings (dict): Application settings group.
             processing (str): The type of processing needed for the settings entry.
             entry (str): The key (name) for current configuration setting being processed.
         """
@@ -560,16 +581,16 @@ related to method (or function) signatures.
             assert isinstance(cli_value, str), \
                 f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
                 'argument: expecting str'
-            settings[entry_keys.settings] = cli_value
+            self._configuration_settings[entry_keys.settings] = cli_value
         elif processing == Part.bool_type:
             assert isinstance(cli_value, bool), \
                 f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
                 'argument: expecting bool'
-            settings[entry_keys.settings] = cli_value
+            self._configuration_settings[entry_keys.settings] = cli_value
         else:  # processing == Part.set_type
             good_set: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.context,
                                                 SentinelTag(Tag.no_entry))
-            target: set = settings[entry_keys.settings]
+            target: set = self._configuration_settings[entry_keys.settings]
             if good_set is SentinelTag(Tag.no_entry):
                 assert isinstance(cli_value, set), \
                     f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
@@ -599,26 +620,41 @@ related to method (or function) signatures.
         """
         return Path.cwd() / f'{self.APP_NAME}.ini'
 
-def _update_option_from_string(ini_value: str, settings: Dict[str, str], entry: str,
-                               file_path: Path) -> None:
-    """
-    Updates a settings option from a string.
+    def _update_option_from_string(self, ini_value: str, entry: str, file_path: Path) -> None:
+        """
+        Updates a settings option from a string.
 
-    Args:
-        ini_value (str): The value read from a configuration file
-        settings (dict): Application settings block that store the specific setting.
-        entry (str): The key (name) for the current configuration setting being processed.
-        file_path (Path): The path to the configuration file being processed, used for logging.
-    """
-    # get the valid choices for 'entry'
-    keys_source: SettingKeys = getattr(CfgKey, entry)
-    allowed_options: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.choice)
-    if ini_value in allowed_options:
-        settings[keys_source.settings] = ini_value
-    else:
-        logging.error(
-            'Invalid %s value "%s" found in "%s". Valid values are: %s',
-            keys_source.ini, ini_value, file_path, ', '.join(allowed_options))
+        Args:
+            ini_value (str): The value read from a configuration file
+            entry (str): The key (name) for the current configuration setting being processed.
+            file_path (Path): The path to the configuration file being processed, used for logging.
+        """
+        # get the valid choices for 'entry'
+        keys_source: SettingKeys = getattr(CfgKey, entry)
+        allowed_options: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.choice)
+        if ini_value in allowed_options:
+            self._configuration_settings[keys_source.settings] = ini_value
+        else:
+            logging.error(
+                'Invalid %s value "%s" found in "%s". Valid values are: %s',
+                keys_source.ini, ini_value, file_path, ', '.join(allowed_options))
+
+    def get(self, key: Setting) -> Union[bool, str, set]:
+        """
+        Get a configuration setting
+
+        Args:
+            key (Setting): The enum for the name of the configuration setting
+
+        Returns The value for the setting
+            Union[bool, str, set]
+
+        Raises
+            KeyError if no configuration has been set for the requested key
+                - really an application logic error. Only existing keys should
+                  ever be requested.
+        """
+        return self._configuration_settings[key.name]
 
 def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwargs) -> None:
     """
@@ -639,7 +675,7 @@ def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwar
         target.update(validate_attribute_names(ini_value))
     else:
         update_set_keywords_from_string(target, ini_value, good_set,
-            remove_prefix=CfgKey.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
+            remove_prefix=Part.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
 
 if __name__ == "__main__":
     app = CompareModuleAPI()
