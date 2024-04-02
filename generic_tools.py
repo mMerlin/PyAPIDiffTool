@@ -11,6 +11,7 @@ from typing import (
     FrozenSet, Any, List, Dict, Set
 )
 import os
+import sys
 import argparse
 import configparser
 import platform
@@ -262,6 +263,40 @@ class TriStateAction(argparse.Action):
         # Set True or False based on whether the option string starts with the negation prefix.
         setattr(namespace, self.dest, not option_string.startswith(self.negation_prefix))
 
+class RunAndExitAction(argparse.Action):
+    """Custom action to execute a method and then exit the program.
+    Emulates the functionality for --help
+
+    Caller must make sure that any context needed by the external_method is setup before
+    argparse is run. For example, any attributes used in it's own 'self' context must be
+    properly initialized.
+
+    Args:
+        option_strings (List[str]): A list of command-line option strings which
+            should be associated with this action.
+        dest (str): The name of the attribute to hold the result of this action.
+        external_method (Callable[..., Any]): The method to be executed when this
+            action is triggered. The method does not need to accept any parameters
+            and can return any type.
+        **kwargs: Arbitrary keyword arguments.
+
+    Attributes:
+        external_method (Callable[..., Any]): Stores the method to execute.
+    """
+    def __init__(self, option_strings: List[str], dest: str,
+                 external_method: Callable[..., Any] = None, **kwargs):
+        super().__init__(option_strings, dest, **kwargs)
+        self.external_method = external_method
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: Optional[List[str]], option_string: str = None) -> NoReturn:
+        if self.external_method:
+            try:
+                self.external_method()
+            except Exception as e:  # pylint:disable=broad-exception-caught
+                parser.error(f'Error executing {self.external_method.__name__}: {e}')
+        sys.exit()
+
 def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pylint:disable=too-many-arguments
                              remove_prefix: str = 'no-',
                              file_path: Path = None,
@@ -393,6 +428,24 @@ def validate_attribute_names(value: str, *, raise_exception: bool = False) -> Se
                              f'"{trim_excess(", ".join(not_attributes), 50)}"')
 
     return result
+
+def validate_module_path(value: str) -> str:
+    """
+    Validates the input string to ensure it is a correctly formatted module path.
+
+    Args:
+        value (str): The input string representing a module path.
+
+    Returns:
+        str: The validated module path if it is correctly formatted.
+
+    Raises:
+        ValueError: If the module path is not correctly formatted.
+    """
+    if not all(part.isidentifier() for part in value.split(".")):
+        raise ValueError("Module path must consist of valid Python identifiers separated by dots.")
+
+    return value
 
 def trim_excess(content: str, max_length: int=100) -> str:
     """
@@ -566,9 +619,7 @@ def is_attr_name(name: str) -> bool:
     """
     return (
         isinstance(name, str) and
-        len(name) > 0 and
-        (not name[0].isdigit()) and
-        all(char.isalnum() or char == '_' for char in name) and
+        name.isidentifier() and
         not inspect.iskeyword(name)
     )
 

@@ -25,11 +25,10 @@ import copy
 from pathlib import Path
 import logging
 from generic_tools import (
-    SentinelTag, IniStr, IniStructureType,
-    add_tri_state_argument, make_all_or_keys_validator, attribute_names_validator,
-    get_config_path, get_config_file, update_set_keywords_from_string,
-    update_set_keywords_from_dict,
-    validate_attribute_names, generate_ini_file
+    SentinelTag, RunAndExitAction, IniStr, IniStructureType,
+    add_tri_state_argument, validate_module_path, make_all_or_keys_validator,
+    attribute_names_validator, get_config_path, get_config_file, update_set_keywords_from_string,
+    update_set_keywords_from_dict, validate_attribute_names, generate_ini_file
 )
 
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
@@ -373,6 +372,9 @@ related to method (or function) signatures.
         # pylint:disable=line-too-long
         parser = argparse.ArgumentParser(description='Compare module APIs.')
         parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
+        parser.add_argument('--create-config', action=RunAndExitAction, nargs=0,
+                            external_method=self.output_default_ini,
+                            help='Create a configuration file with default settings and exit')
 
         parser.add_argument('--attribute-scope', choices=['all', 'public', 'published'],
                             help='Scope of attributes to compare.')
@@ -429,18 +431,17 @@ related to method (or function) signatures.
                             help='Do not load the user configuration file.')
         parser.add_argument('--no-project-config', action='store_false',
                             help='Do not load the project configuration file.')
-        parser.add_argument('--create-config', action='store_true',
-                            help='Create a configuration file with default settings.')
 
-        # HPD package path arguments (base and port)
+        parser.add_argument('base-module-path', metavar='BASE', type=validate_module_path,
+            help='Dot notation path for the base module (e.g., "os.path").')
+
+        parser.add_argument('port-module-path', metavar='PORT' ,type=validate_module_path,
+            help='Dot notation path for the port module (e.g., "mypackage.mymodule").')
 
         return parser
 
     def process_configuration_files(self):
         """Handles command-line arguments related to configuration files."""
-        if self._raw_args.create_config:
-            self.output_default_ini()
-            sys.exit()
         if self._raw_args.no_user_config:
             self._load_configuration_file(self._user_config_path())
         if self._raw_args.no_project_config:
@@ -645,5 +646,5 @@ if __name__ == "__main__":
 
 # pylint:disable=line-too-long
 # cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder
-# cSpell:ignore nargs appdata
+# cSpell:ignore nargs appdata mypackage
 # cSpell:allowCompoundWords true
