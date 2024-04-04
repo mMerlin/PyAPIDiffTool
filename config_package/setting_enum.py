@@ -13,6 +13,7 @@ from enum import Enum, auto
 class Setting(Enum):
     """settings that can be accessed from internal configuration"""
     SCOPE = auto()
+    LOGGING_LEVEL = auto()
     REPORT_EXACT_MATCH = auto()
     REPORT_MATCHED = auto()
     REPORT_NOT_IMPLEMENTED = auto()

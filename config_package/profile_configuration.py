@@ -77,6 +77,9 @@ class CfgKey:
     scope: SettingKeys = SettingKeys(       settings=Setting.SCOPE.name,
                                                 ini='attribute-scope',
                                                 cli='attribute_scope')
+    loglevel: SettingKeys = SettingKeys(    settings=Setting.LOGGING_LEVEL.name,
+                                                ini='logging-level',
+                                                cli='logging_level')
     exact: SettingKeys = SettingKeys(       settings=Setting.REPORT_EXACT_MATCH.name,
                                                 ini='exact-match',
                                                 cli='report_exact_match')
@@ -115,6 +118,7 @@ class CfgKey:
 
     # <storage_key>_<validation_type>: FrozenSet = frozenset({})
     scope_choices: FrozenSet = frozenset({'all', 'public', 'published'})
+    loglevel_choices: FrozenSet = frozenset({'DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL'})
     '''valid choices for each configuration function (storage key) that must have
     one of a fixed set of values'''
     docstring_contexts: FrozenSet = frozenset({'module', 'class', 'method'})
@@ -145,7 +149,7 @@ class PrcKey:
     '''
 
     #<section>_<type>: FrozenSet = frozenset({})
-    main_options: FrozenSet = frozenset({'scope'})
+    main_options: FrozenSet = frozenset({'scope', 'loglevel'})
     # main_bools: FrozenSet = frozenset({})  # placeholder
     # main_sets: FrozenSet = frozenset({})  # placeholder
     # report_options: FrozenSet = frozenset({})  # placeholder
@@ -186,11 +190,16 @@ class ProfileConfiguration:
         base
         port
     """
-    def __init__(self, application_name: str):
+    def __init__(self, application_name: str, logger_name: str = None):
         self._app_name: str = application_name
+        self._logger: logging.Logger = logging.getLogger(logger_name
+            if isinstance(logger_name, str) and logger_name else 'root')
+        assert self._logger.handlers, f'The "{self._logger.name}" logger does not have any handler'
         self._configuration_settings: Dict[str, ConfigurationType] = self._default_configuration()
+        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
         cmd_line_parser: argparse.ArgumentParser = self._create_command_line_parser()
         cli_args: argparse.Namespace = cmd_line_parser.parse_args()
+        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
         self._process_configuration_files(cli_args)
         self._apply_command_line_arguments_to_configuration(cli_args)
         self._apply_settings_to_configuration()
@@ -259,6 +268,7 @@ class ProfileConfiguration:
         """The builtin base (default) configuration settings"""
         def_cfg: Dict[str, ConfigurationType] = {
             CfgKey.scope.settings: "all",
+            CfgKey.loglevel.settings: logging.getLevelName(logging.WARN),
             CfgKey.exact.settings: False,
             CfgKey.matched.settings: False,
             CfgKey.not_imp.settings: False,
@@ -306,7 +316,7 @@ command line option.
 
 Additional configuration files can be specified from the command line with the
 "--config-file CONFIG_FILE" option. This can be specified multiple times. The
-file are loaded in the order the options are specified.
+files are loaded in the order the options are specified.
 
 Main section''',
                 IniStr.settings: {
@@ -325,6 +335,12 @@ in base exists in port, but was not published in the port implementation. The
 reverse case will be reported as an extension in the port implementation.''',
                         IniStr.default: def_reference[CfgKey.scope.settings],
                         IniStr.comment: 'choose one of: all, public, published'
+                    },
+                    CfgKey.loglevel.settings: {
+                        IniStr.doc: '''Set the minimum severity level for messages to include in the application
+log file.''',
+                        IniStr.default: def_reference[CfgKey.loglevel.settings],
+                        IniStr.comment: 'choose one of: DEBUG, INFO, WARN, ERROR, CRITICAL'
                     }
                 }
             },
@@ -418,12 +434,14 @@ related to method (or function) signatures.
         # pylint:disable=line-too-long
         parser = argparse.ArgumentParser(description='Compare module APIs.')
         parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
-        parser.add_argument('--create-config', action=RunAndExitAction, nargs=0,
+        parser.add_argument('--generate-rcfile', action=RunAndExitAction, nargs=0,
                             external_method=self._output_default_ini,
-                            help='Create a configuration file with default settings and exit')
+                            help='Generate a sample configuration file with default settings and exit')
 
         parser.add_argument('--attribute-scope', choices=['all', 'public', 'published'],
                             help='Scope of attributes to compare.')
+        parser.add_argument('--logging-level', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL'],
+                            help='Level to start logging at.')
         add_tri_state_argument(parser, '--report-exact-match',
                                'Include attributes with exact matches in report.',
                                Part.negation_prefix)
@@ -500,7 +518,7 @@ related to method (or function) signatures.
         if cli.config_file:
             for cfg_file in cli.config_file:
                 if not self._load_configuration_file(Path(cfg_file)):
-                    logging.error('configuration file "%s" requested on the command line '
+                    self._logger.error('configuration file "%s" requested on the command line '
                                 'could not be loaded', cfg_file)
 
     def _load_configuration_file(self, file_path: Path) -> bool:
@@ -540,7 +558,8 @@ related to method (or function) signatures.
                     # do not exist
                     self._process_config_case(config_section, p_type, entry, file_path)
 
-        logging.info('settings loaded from "%s"', file_path)
+        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
+        self._logger.info('settings loaded from "%s"', file_path)
         return True
 
     def _process_config_case(self, section: configparser.SectionProxy,
@@ -659,7 +678,7 @@ related to method (or function) signatures.
         if ini_value in allowed_options:
             self._configuration_settings[keys_source.settings] = ini_value
         else:
-            logging.error(
+            self._logger.error(
                 'Invalid %s value "%s" found in "%s". Valid values are: %s',
                 keys_source.ini, ini_value, file_path, ', '.join(allowed_options))
 
@@ -689,5 +708,5 @@ if __name__ == "__main__":
 
 # pylint:disable=line-too-long
 # cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder
-# cSpell:ignore nargs appdata mypackage
+# cSpell:ignore nargs appdata mypackage rcfile
 # cSpell:allowCompoundWords true

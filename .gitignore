@@ -1,0 +1,12 @@
+# Project specific settings
+CompareModuleAPI.ini
+CompareModuleAPI.log
+# external libraries with there own version management
+lib/adafruit_*
+# Pytest cache directory
+.pytest_cache/
+# Bytecode cache files
+__pycache__/
+*.py[cod]  # Includes .pyc, .pyo, and .pyd files
+# tool configuration files
+.pylintrc

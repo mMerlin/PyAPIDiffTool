@@ -12,6 +12,8 @@ from typing import (
 )
 import os
 import sys
+import string
+import random
 import argparse
 import configparser
 import platform
@@ -117,6 +119,36 @@ class ListHandler(logging.Handler):
             return tuple()
         return tuple((rec.name, rec.levelname, rec.levelno, rec.msg, rec.args)
                      for rec in self.log_records)
+
+class ReportHandler(logging.Handler):
+    """Save log record messages to a list.
+
+    Provide list like read only access to the recorded content.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._report: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        Capture the log formatted record message.
+
+        Args:
+            record (logging.LogRecord): The standard logging.LogRecord.
+        """
+        self._report.append(record.getMessage())
+
+    def __getitem__(self, index):
+        """Enable index-based access to the content."""
+        return self._report[index]
+
+    def __len__(self):
+        """Allow len() to be called on the handler."""
+        return len(self._report)
+
+    def __iter__(self):
+        """Allow iteration over the content."""
+        return iter(self._report)
 
 @dataclass(frozen=True)
 class ExampleTags:
@@ -622,6 +654,11 @@ def is_attr_name(name: str) -> bool:
         name.isidentifier() and
         not inspect.iskeyword(name)
     )
+
+def generate_random_alphanumeric(length: int = 10) -> str:
+    """Generate a random string of alphanumeric characters."""
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
 
 def get_config_path(app_name: str) -> Path:
     """Determine the configuration path for the application based on the operating system.

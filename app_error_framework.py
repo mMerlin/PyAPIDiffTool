@@ -18,3 +18,8 @@ class ApplicationLogicError(ApplicationRootError):
     Indicates a violation in the program's logic or assumptions.
     Can be used to catch programming errors early.
     """
+
+class RetryLimitExceeded(ApplicationRootError):
+    """Too many retries for operation.
+    Specify the context in the message.
+    """
