@@ -15,16 +15,60 @@ import inspect
 import decimal
 import fractions
 import logging
-from generic_tools import SentinelTag
+from generic_tools import SentinelTag, StrOrTag
 
 ParameterDetail = namedtuple('ParameterDetail', ['name', 'kind', 'annotation', 'default'])
 """Details collected about a function or method parameter"""
 
-StrOrTag = Union[str, SentinelTag]
-AttributeProfile = Tuple[StrOrTag, str,
+AttributeProfile = Tuple[StrOrTag,
+                         str,
                          Tuple[StrOrTag, types.ModuleType],
                          Tuple[str, ...],
                          Tuple[tuple, StrOrTag]]
+"""
+    parent context typehint annotation
+    type
+    (source file path, source module)
+    ("is" keywords)
+    (detail, …)
+        «hpd need to expand»
+"""
+
+@dataclass(frozen=True)
+class APKey:
+    """
+    Constants indexing and specifying the fields in an AttributeProfile tuple data structure.
+    """
+    # pylint:disable=too-many-instance-attributes
+    # Root element indices and count
+    annotation: int = 0
+    """parent contact typehint annotation"""
+    data_type: int = 1
+    """python data type of the attribute"""
+    source: int = 2
+    """attribute profile source file and module"""
+    tags: int = 3
+    """'IS' keywords for matches to inspect.is«category» methods"""
+    details: int = 4
+    """detail information for the attribute"""
+    root_elements: int = 5
+    """the number of elements in an AttributeProfile root tuple"""
+
+    # source tuple element indices and count
+    file: int = 0
+    """source file defining attribute"""
+    module: int = 1
+    """module name defining attribute"""
+    source_elements: int = 2
+    """the number of elements in a source tuple"""
+
+    # details tuple element indices and count
+    context: int = 0
+    """context key for the detail information"""
+    detail: int = 1
+    """attribute detail content"""
+    detail_elements: int = 2
+    """the number of elements in a details tuple"""
 
 @dataclass(frozen=True)
 class Tag:

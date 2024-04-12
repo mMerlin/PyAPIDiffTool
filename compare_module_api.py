@@ -18,10 +18,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 from typing import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app_error_framework import RetryLimitExceeded
 from config_package import ProfileConfiguration, Setting
-from generic_tools import ReportHandler, generate_random_alphanumeric
+# from profiling_utils import annotation_str, default_str, validate_profile_data,
+#     report_profile_data_exceptions
+# from introspection_tools ObjectContextData, AttributeProfile
+from generic_tools import ReportHandler, LoggerMixin, generate_random_alphanumeric
 
 
 @dataclass()
@@ -39,6 +43,9 @@ class Report:
         report = Report()
         report.matched_logger.setLevel(logging.INFO)
         report.matched('test %s', 'this')
+
+        To suppress recording of specific report content:
+        report.skipped_logger.setLevel(logging.ERROR)
     The valid arguments to matched, and the other <name> methods, is the same as
     logging.info()
     """
@@ -83,6 +90,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     def __init__(self):
         self._logger = _initialize_exception_logging(self.APP_NAME + ".log")
         self._logger.setLevel(logging.DEBUG)
+        LoggerMixin.set_logger(self._logger)
         self.settings = ProfileConfiguration(self.APP_NAME, self._logger.name)
         self._logger.setLevel(self.settings[Setting.LOGGING_LEVEL.name])
         self.report: Report = Report()
@@ -101,7 +109,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self.report.skipped_logger.setLevel(logging.INFO
             if self.settings[Setting.REPORT_SKIPPED.name] else logging.ERROR)
 
-def _initialize_exception_logging(log_file: str = 'errors.log',
+def _initialize_exception_logging(log_file: Path = 'errors.log',
                                   *, retries: int = 3) -> logging.Logger:
     """
     gets a Logger instance to be used application wide for exception reporting
@@ -179,6 +187,6 @@ def get_unique_logger(name_prefix: str, *, retries: int = 3) -> logging.Logger:
 if __name__ == "__main__":
     app = CompareModuleAPI()
 
-# cSpell:words
-# cSpell:ignore backslashreplace
+# cSpell:words pathlib backslashreplace levelname
+# cSpell:ignore
 # cSpell:allowCompoundWords true

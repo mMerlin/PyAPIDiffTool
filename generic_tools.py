@@ -26,6 +26,46 @@ import importlib
 
 IniStructureType = Dict[str, Dict[str, Union[str, Dict[str, str]]]]
 
+class LoggerMixin:
+    """
+    Provides an interface to allow applications to override the logger instanced used
+    by code in the module
+
+    Usage:
+        For any (other) module:
+            from generic_tools import LoggerMixin
+            module_logger: logging.Logger = LoggerMixin.get_logger()
+            module_logger.warning('message content')
+        For application:
+            import logging
+            from generic_tools import LoggerMixin
+            app_logger = logging.getLogger("my_application")
+            LoggerMixin.set_logger(app_logger)
+
+    For best functionality, an application should create and configure a logger instance
+    early in it's lifecyle, then use the mixin to adjust the 'global' logger. Any code run
+    in modules that are using the mixin will us a default logger, if it is run before the
+    mixin logger is set.
+    """
+    _logger: Optional[logging.Logger] = None
+
+    @classmethod
+    def set_logger(cls, logger: logging.Logger) -> None:
+        """
+        Sets the logger instance available to all code in the module
+
+        Args:
+            logger (Logger): the logger to use (going forward)
+        """
+        cls._logger = logger
+
+    @classmethod
+    def get_logger(cls) -> logging.Logger:
+        """gets the configured or default logger instance"""
+        if cls._logger is not None:
+            return cls._logger
+        return logging.getLogger('default')
+
 @dataclass(frozen=True)
 class IniStr:
     """
@@ -283,6 +323,8 @@ class SentinelTag:
         """
         raise AttributeError("SentinelTag instances are immutable.")
 
+StrOrTag = Union[str, SentinelTag]
+
 class TriStateAction(argparse.Action):
     """Custom action to handle tri-state (None, True, False) using 2 arguments (--arg and its
     negation).  The negation will be --{negation_prefix}arg"""
@@ -375,10 +417,12 @@ def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pyl
         else:
             error_detected = True
             if file_path and source_entry:
-                logging.warning('Invalid %s keyword "%s" found in "%s". Valid keywords: %s',
-                                source_entry, choice, file_path, ', '.join(valid_values))
+                LoggerMixin.get_logger().warning(
+                    'Invalid %s keyword "%s" found in "%s". Valid keywords: %s',
+                    source_entry, choice, file_path, ', '.join(valid_values))
             else:
-                logging.warning('"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
+                LoggerMixin.get_logger().warning(
+                    '"%s" not in valid keywords: %s', choice, ', '.join(valid_values))
     if error_detected and raise_exception:
         raise ValueError('Invalid keyword set')
     return result
@@ -453,8 +497,8 @@ def validate_attribute_names(value: str, *, raise_exception: bool = False) -> Se
     result = {ent for ent in entries if is_attr_name(ent)}
     not_attributes = entries - result
     if not_attributes:
-        logging.warning('%s invalid attribute names ignored: {%s}', len(not_attributes),
-                        trim_excess(", ".join(not_attributes), 50))
+        LoggerMixin.get_logger().warning('%s invalid attribute names ignored: {%s}',
+            len(not_attributes), trim_excess(", ".join(not_attributes), 50))
         if raise_exception:
             raise ValueError(f'{len(not_attributes)} invalid attribute names: ' +
                              f'"{trim_excess(", ".join(not_attributes), 50)}"')
@@ -605,25 +649,26 @@ def import_module(module_name: str) -> ModuleType:
         return module
     except ModuleNotFoundError as e:
         if e.name == module_name:
-            logging.error('Module "%s" not found. Please check the module name '
+            LoggerMixin.get_logger().error('Module "%s" not found. Please check the module name '
                           'and ensure it is installed.', module_name)
         else:
-            logging.error('Required dependency "%s" was not found while importing "%s". '
-                          'Please install it and retry.', e.name, module_name)
+            LoggerMixin.get_logger().error('Required dependency "%s" was not found while importing '
+                          '"%s". Please install it and retry.', e.name, module_name)
         raise
     except ImportError as e:
-        logging.error('Error importing module "%s": %s\n Please correct the '
+        LoggerMixin.get_logger().error('Error importing module "%s": %s\n Please correct the '
                       'problem then retry.', module_name, e)
         raise
     except AttributeError as e:
         if e.name == 'startswith':
-            logging.error('The module name "%s" is not a string. Please provide '
+            LoggerMixin.get_logger().error('The module name "%s" is not a string. Please provide '
                           'a valid string for the module name.', module_name)
         else:
-            logging.error('Attribute error while importing module "%s": %s', module_name, e)
+            LoggerMixin.get_logger().error(
+                'Attribute error while importing module "%s": %s', module_name, e)
         raise
     except Exception as e:
-        logging.error('Unexpected error (%s) during module "%s" import: %s',
+        LoggerMixin.get_logger().error('Unexpected error (%s) during module "%s" import: %s',
                       type(e).__name__, module_name, e)
         raise
 
@@ -697,18 +742,19 @@ def get_config_file(config_file: Path) -> Optional[configparser.ConfigParser]:
 
     if not config_file.is_file():
         # config.read() silently ignores missing files. Explicit test needed to report.
-        logging.warning('Configuration file "%s" not found', config_file)
+        LoggerMixin.get_logger().warning('Configuration file "%s" not found', config_file)
         return None
 
     try:
         config.read(config_file)
         return config
     except PermissionError:
-        logging.error('Unable to read "%s" due to insufficient permissions.', config_file)
+        LoggerMixin.get_logger().error(
+            'Unable to read "%s" due to insufficient permissions.', config_file)
     except (configparser.ParsingError, configparser.Error) as e:
-        logging.error('Error reading "%s": %s', config_file, e)
+        LoggerMixin.get_logger().error('Error reading "%s": %s', config_file, e)
     except Exception as e:  # pylint:disable=broad-exception-caught
-        logging.error('Unexpected error reading "%s": %s', config_file, e)
+        LoggerMixin.get_logger().error('Unexpected error reading "%s": %s', config_file, e)
 
     return None
 

@@ -1,7 +1,7 @@
 # Project specific settings
 CompareModuleAPI.ini
 CompareModuleAPI.log
-# external libraries with there own version management
+# external libraries with their own version management
 lib/adafruit_*
 # Pytest cache directory
 .pytest_cache/
