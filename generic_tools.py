@@ -43,7 +43,7 @@ class LoggerMixin:
             LoggerMixin.set_logger(app_logger)
 
     For best functionality, an application should create and configure a logger instance
-    early in it's lifecyle, then use the mixin to adjust the 'global' logger. Any code run
+    early in it's lifecycle, then use the mixin to adjust the 'global' logger. Any code run
     in modules that are using the mixin will us a default logger, if it is run before the
     mixin logger is set.
     """
@@ -200,6 +200,12 @@ class ExampleTags:
 
     In more complex cases, multiple …Tag class can help document the usage context, and
     avoid the need for complex tag values be unique and document the context.
+
+    Note that if Context1Tag.TAG1 == Context2Tag.Tag2, then
+    SentinelTag(Context1Tag.TAG1) is SentinelTag(Context2Tag.Tag2)
+    That is usually not a problem, if usage of Context1Tag and Context2Tag do not overlap.
+    If that is a concern, make sure the tag values are unique. That could be done by using
+    a tuple instead of a string for the tag, and including a context specific element.
     """
     # pylint:disable=invalid-name
     NO_VALUE_DEFINE: str = 'No value defined'
@@ -209,6 +215,7 @@ class ExampleTags:
     """Useful for letting a caller know that a problem has been handled, and it is safe to
     just continue to the next item"""
     PREFIX1_NAME: str = 'identifier for name in the context of prefix 1'
+    MORE_UNIQUE: tuple = ('maybe not unique', 'context qualifier')
 
 class SentinelTag:
     """

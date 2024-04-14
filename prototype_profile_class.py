@@ -10,19 +10,23 @@ from collections import namedtuple
 from dataclasses import dataclass
 import logging
 from queue import Queue
-from generic_tools import SentinelTag, ListHandler, import_module, tuple_2_generator, is_attr_name
+from generic_tools import (
+    SentinelTag, LoggerMixin, ListHandler,
+    import_module, tuple_2_generator, is_attr_name,
+    StrOrTag,
+)
 from introspection_tools import (
     ObjectContextData,
     Tag,
     InspectIs as Is,
     ProfileConstant as PrfC,
-    StrOrTag,
+    APKey as Key,
     ParameterDetail,
     attribute_name_compare_key,
     get_attribute_info,
     populate_object_context,
 )
-# from app_error_framework import ApplicationLogicError
+from app_error_framework import ApplicationLogicError
 
 MatchingContext = namedtuple(
     'MatchingContext', ['base_path', 'port_path', 'base_element', 'port_element'])
@@ -50,7 +54,7 @@ AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple
 """
 
 @dataclass(frozen=True)
-class Key:
+class PrToKey:
     """
     Constants for lookup indexes, to avoid possible typos in strings used to reference them
     """
@@ -68,22 +72,6 @@ class Key:
     COMPARE_NAME: int = 1
     INFO_NAME: int = 0
     INFO_PROFILE: int = 1
-    PROFILE_ELEMENTS: int = 5
-    PROFILE_ANNOTATION: int = 0
-    PROFILE_TYPE: int = 1
-    PROFILE_SOURCE: int = 2
-    SOURCE_ELEMENTS: int = 2
-    SOURCE_FILE: int = 0
-    SOURCE_MODULE: int = 1
-    PROFILE_TAGS: int = 3
-    PROFILE_DETAIL: int = 4
-    DETAIL_ELEMENTS: int = 2
-    DETAIL_KEY: int = 0
-    DETAIL_CONTENT: int = 1
-    SIG_ELEMENTS: int = 3
-    SIG_PARAMETERS: int = 0
-    SIG_RETURN: int = 1
-    SIG_DOC: int = 2
 
 @dataclass(frozen=True)
 class Ignore:
@@ -178,12 +166,13 @@ class ProfilePrototype:
         self._configuration_settings: Dict[str, Union[str, Dict[str, Union[bool, Set[str]]]]] = {}
         self.load_configuration()  # Loads configuration settings
         self._reports: Dict[str, logging.Logger] = {}
-        self._reports[Key.REPORT_NOT_IMPLEMENTED] = self.create_logger(Key.REPORT_NOT_IMPLEMENTED)
-        self._reports[Key.REPORT_EXTENSION] = self.create_logger(Key.REPORT_EXTENSION)
-        self._reports[Key.REPORT_MATCHED_ATTRIBUTE] = \
-            self.create_logger(Key.REPORT_MATCHED_ATTRIBUTE)
-        self._reports[Key.REPORT_ATTRIBUTE_SKIPPED] = \
-            self.create_logger(Key.REPORT_ATTRIBUTE_SKIPPED)
+        self._reports[PrToKey.REPORT_NOT_IMPLEMENTED] = self.create_logger(
+            PrToKey.REPORT_NOT_IMPLEMENTED)
+        self._reports[PrToKey.REPORT_EXTENSION] = self.create_logger(PrToKey.REPORT_EXTENSION)
+        self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE] = \
+            self.create_logger(PrToKey.REPORT_MATCHED_ATTRIBUTE)
+        self._reports[PrToKey.REPORT_ATTRIBUTE_SKIPPED] = \
+            self.create_logger(PrToKey.REPORT_ATTRIBUTE_SKIPPED)
         self._shared: Dict[str, Union[int, bool]] = {}
         self._expand_queue = Queue()  # A FIFO queue
         self._expand_queue.put(MatchingContext(
@@ -437,7 +426,7 @@ class ProfilePrototype:
                 if context.published else context.public,
             Cfg.public_scope: context.public
         }.get(attr_scope, context.all)
-        rpt_target = self._reports[Key.REPORT_ATTRIBUTE_SKIPPED]
+        rpt_target = self._reports[PrToKey.REPORT_ATTRIBUTE_SKIPPED]
 
         ignorable = self.get_ignored_attributes(context)
         for name in sorted(attr_names, key=attribute_name_compare_key):
@@ -447,10 +436,10 @@ class ProfilePrototype:
                                                    SentinelTag('Exclude by name')))
                 continue
             raw_result = get_attribute_info(context, name)
-            assert raw_result[Key.INFO_NAME] == name, 'get_attribute_info should return the ' \
-                f'requested attribute name: "{raw_result[Key.INFO_PROFILE]}" not equal "{name}"'
+            assert raw_result[PrToKey.INFO_NAME] == name, 'get_attribute_info should return the ' \
+                f'requested attribute name: "{raw_result[PrToKey.INFO_PROFILE]}" not equal "{name}"'
             result = (attribute_name_compare_key(name),) + raw_result[1:]
-            if result[Key.INFO_PROFILE] is SentinelTag(Tag.ERROR_ACCESS_FAILURE):
+            if result[PrToKey.INFO_PROFILE] is SentinelTag(Tag.ERROR_ACCESS_FAILURE):
                 rpt_target.error(f'**** Error accessing {context.path} "{name}" attribute: ' +
                     f'{result}')
                 context.skipped += 1
@@ -458,7 +447,7 @@ class ProfilePrototype:
                 continue
             if self.filter_by_source(context, name, result):
                 continue
-            key = result[Key.INFO_PROFILE][Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]
+            key = result[PrToKey.INFO_PROFILE][Key.details][Key.context]
             if key is SentinelTag(Tag.SYS_EXCLUDE) or key is SentinelTag(Tag.BUILTIN_EXCLUDE):
                 self.report_iterate_skip(context, result)
                 continue
@@ -494,7 +483,7 @@ class ProfilePrototype:
 
         Returns True is the attribute is to be discarded, else False
         """
-        src_file, src_module = result[Key.INFO_PROFILE][Key.PROFILE_SOURCE]
+        src_file, src_module = result[PrToKey.INFO_PROFILE][Key.source]
         # if not ((src_file is SentinelTag(Tag.NO_SOURCE) and src_module is None) or \
         #         (src_file == context.source and src_module is context.module) or \
         #         (src_file is SentinelTag(Tag.NO_SOURCE) and src_module is context.module)):
@@ -541,7 +530,7 @@ class ProfilePrototype:
                 (tuple): the information collected for the attribute implementation
                 (SentinelTag): marker when no attempt has been made to collect attribute information
         """
-        rpt_target = self._reports[Key.REPORT_ATTRIBUTE_SKIPPED]
+        rpt_target = self._reports[PrToKey.REPORT_ATTRIBUTE_SKIPPED]
         if not isinstance(result, tuple):
             assert result is SentinelTag('Exclude by name')
         rpt_target.info(f'{context.path} '
@@ -573,7 +562,7 @@ class ProfilePrototype:
                 if compare_base == compare_port:
                     # print(f'{compare_base} both')  # TRACE
                     match_count += 1
-                    self.handle_matched_attribute(match_pair, compare_base[Key.COMPARE_NAME],
+                    self.handle_matched_attribute(match_pair, compare_base[PrToKey.COMPARE_NAME],
                                                   profile_base, profile_port)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                     compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
@@ -581,13 +570,13 @@ class ProfilePrototype:
                     # print(f'{compare_base} {que_ent.base_path} not implemented')  # TRACE
                     not_impl_count += 1
                     self.handle_unmatched_attribute(match_pair, 'base',
-                        compare_base[Key.COMPARE_NAME], profile_base)
+                        compare_base[PrToKey.COMPARE_NAME], profile_base)
                     compare_base, profile_base = next(iter_base, (self.HIGH_VALUES, None))
                 else: # compare_base > compare_port
                     # print(f'{compare_port} {que_ent.port_path} extension')  # TRACE
                     extension_count += 1
                     self.handle_unmatched_attribute(match_pair, 'port',
-                        compare_port[Key.COMPARE_NAME], profile_port)
+                        compare_port[PrToKey.COMPARE_NAME], profile_port)
                     compare_port, profile_port = next(iter_port, (self.HIGH_VALUES, None))
             # debug_count += 1
             base_skip_count += match_pair.base.skipped
@@ -616,17 +605,17 @@ class ProfilePrototype:
         """
         validate_profile_data(name, context.base, profile_base)
         validate_profile_data(name, context.port, profile_port)
-        rpt_target = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        rpt_target = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
         # need to watch for the need to expand both attributes
-        self._shared[Key.HDR_SENT_DIF] = False
-        if profile_base[Key.PROFILE_ANNOTATION] != profile_port[Key.PROFILE_ANNOTATION]:
+        self._shared[PrToKey.HDR_SENT_DIF] = False
+        if profile_base[Key.annotation] != profile_port[Key.annotation]:
             self.send_match_diff_header(name, context)
-            rpt_target.info(f'  Annotation: Base {profile_base[Key.PROFILE_ANNOTATION]};' +
-                            f' Port {profile_port[Key.PROFILE_ANNOTATION]}')
-        if profile_base[Key.PROFILE_TYPE] != profile_port[Key.PROFILE_TYPE]:
+            rpt_target.info(f'  Annotation: Base {profile_base[Key.annotation]};' +
+                            f' Port {profile_port[Key.annotation]}')
+        if profile_base[Key.data_type] != profile_port[Key.data_type]:
             self.send_match_diff_header(name, context)
-            rpt_target.info(f'  Type: Base {profile_base[Key.PROFILE_TYPE]};' +
-                            f' Port {profile_port[Key.PROFILE_TYPE]}')
+            rpt_target.info(f'  Type: Base {profile_base[Key.data_type]};' +
+                            f' Port {profile_port[Key.data_type]}')
             # 'type' could match 'function'. A class constructor could do the same
             # as a function: logging._logRecordFactory
             # doing that sort of match is going to need smarter processing. Currently
@@ -635,15 +624,15 @@ class ProfilePrototype:
             # ?re-tag the function to be expanded? ?logic to only expand the constructor?
             # process the class constructor now, and match to function signature?
             # -- the class is its constructor??
-        if profile_base[Key.PROFILE_TAGS] != profile_port[Key.PROFILE_TAGS]:
+        if profile_base[Key.tags] != profile_port[Key.tags]:
             self.send_match_diff_header(name, context)
-            rpt_target.info(f'  "is" tags: Base {profile_base[Key.PROFILE_TAGS]};' +
-                            f' Port {profile_port[Key.PROFILE_TAGS]}')
-        # compare profile_«»[Key.PROFILE_SOURCE]. Not expecting to match if part of packages
+            rpt_target.info(f'  "is" tags: Base {profile_base[Key.tags]};' +
+                            f' Port {profile_port[Key.tags]}')
+        # compare profile_«»[Key.source]. Not expecting to match if part of packages
         # being compared
 
-        base_category = profile_base[Key.PROFILE_DETAIL]
-        port_category = profile_port[Key.PROFILE_DETAIL]
+        base_category = profile_base[Key.details]
+        port_category = profile_port[Key.details]
         if self._handle_simple_details(name, context, base_category, port_category):
             return
         # check if name is published in one implementation but not the other
@@ -653,14 +642,17 @@ class ProfilePrototype:
         if name not in context.base.published and name in context.port.published:
             self.send_match_diff_header(name, context)
             rpt_target.info('  published in port implementation, but not in the base')
-        if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE):
+        if base_category[Key.context] == PrfC.DATA_NODE:
             self.queue_attribute_expansion(name, context)
-            if not self._shared[Key.HDR_SENT_DIF]:  # Exact match (so far)
+            if not self._shared[PrToKey.HDR_SENT_DIF]:  # Exact match (so far)
                 if self.get_configuration(Cfg.report_exact):
                     rpt_target.info(
                         f'"{name}" Expand matched node: {context.base.path}¦{context.port.path}')
             return
-        if not isinstance(base_category[Key.DETAIL_KEY], str):
+        # if not isinstance(base_category[Key.context], str):
+        #      # After refactor, «»_category[Key.context] should always be a string
+        if base_category[Key.context] in (
+                PrfC.A_CLASS, PrfC.DATA_LEAF, PrfC.DATA_NODE, PrfC.unhandled_value):
             self.send_match_diff_header(name, context)
             rpt_target.info(f'  compare context: Base {base_category};' +
                             f' Port {port_category}')
@@ -680,7 +672,7 @@ class ProfilePrototype:
             port_category (Tuple): Attribute category profile information for the attribute in
                 the ported implementation.
         """
-        rpt_target = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        rpt_target = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
         if len(base_category) != len(port_category):
             self.send_match_diff_header(name, context)
             rpt_target.info(f'  Context length {len(base_category)} not = {len(port_category)}: '
@@ -695,18 +687,18 @@ class ProfilePrototype:
             rpt_target.info(f'    {port_category}')
             return True
         # len(handling_category) == 2
-        if base_category[Key.DETAIL_KEY] != port_category[Key.DETAIL_KEY]:
+        if base_category[Key.context] != port_category[Key.context]:
             self.send_match_diff_header(name, context)
-            rpt_target.info(f'  Base detail key {base_category[Key.DETAIL_KEY]} ' +
-                            f'not equal port key {port_category[Key.DETAIL_KEY]}: '
+            rpt_target.info(f'  Base detail key {base_category[Key.context]} ' +
+                            f'not equal port key {port_category[Key.context]}: '
                             'cannot compare further')
             rpt_target.info(f'    {base_category}')
             rpt_target.info(f'    {port_category}')
             return True
-        if base_category[Key.DETAIL_KEY] is SentinelTag(Tag.DATA_LEAF):
-            if base_category[Key.DETAIL_CONTENT] == port_category[Key.DETAIL_CONTENT] or \
+        if base_category[Key.context] == PrfC.DATA_LEAF:
+            if base_category[Key.detail] == port_category[Key.detail] or \
                     self._is_ignored_docstring(name, context):
-                if not self._shared[Key.HDR_SENT_DIF]:  # Exact match
+                if not self._shared[PrToKey.HDR_SENT_DIF]:  # Exact match
                     if self.get_configuration(Cfg.report_exact):
                         rpt_target.info(
                             f'"{name}" No Difference: {context.base.path}¦{context.port.path}')
@@ -718,8 +710,8 @@ class ProfilePrototype:
             #  trim and collapse whitespace
             #  specify maximum length «account for appended ellipse»
             #  smarter: start with ellipse and make sure to show segment that is different
-            rpt_target.info(f'    base content = {base_category[Key.DETAIL_CONTENT]:.50}')
-            rpt_target.info(f'    port content = {port_category[Key.DETAIL_CONTENT]:.50}')
+            rpt_target.info(f'    base content = {base_category[Key.detail]:.50}')
+            rpt_target.info(f'    port content = {port_category[Key.detail]:.50}')
             return True
         return False
 
@@ -759,32 +751,32 @@ class ProfilePrototype:
             port_category (Tuple): Attribute category profile information for the attribute in
                 the ported implementation.
         """
-        rpt_target = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
-        assert isinstance(base_category[Key.DETAIL_KEY], str) and \
-            isinstance(port_category[Key.DETAIL_KEY], str), \
-            f'{name} handling category 0 is {type(base_category[Key.DETAIL_KEY])}, ' + \
-            f'{type(port_category[Key.DETAIL_KEY])} instead of str, str.'
-        if base_category[Key.DETAIL_KEY] != port_category[Key.DETAIL_KEY]:
+        rpt_target = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
+        assert isinstance(base_category[Key.context], str) and \
+            isinstance(port_category[Key.context], str), \
+            f'{name} handling category 0 is {type(base_category[Key.context])}, ' + \
+            f'{type(port_category[Key.context])} instead of str, str.'
+        if base_category[Key.context] != port_category[Key.context]:
             self.send_match_diff_header(name, context)
-            rpt_target.info(f'  Handling category 0 "{base_category[Key.DETAIL_KEY]}" != ' +
-                            f'"{port_category[Key.DETAIL_KEY]}": cannot compare further')
+            rpt_target.info(f'  Handling category 0 "{base_category[Key.context]}" != ' +
+                            f'"{port_category[Key.context]}": cannot compare further')
             rpt_target.info(f'    {base_category}')
             rpt_target.info(f'    {port_category}')
             return
-        if base_category[Key.DETAIL_CONTENT] is SentinelTag(Tag.OTHER_EXPAND) \
-                and base_category[Key.DETAIL_CONTENT] is port_category[Key.DETAIL_CONTENT]:
-            assert base_category[Key.DETAIL_KEY] in (PrfC.A_CLASS, Is.DATADESCRIPTOR), 'Other ' \
-                f'expand context "{base_category[Key.DETAIL_KEY]}" found for "{name}" attribute.'
+        if base_category[Key.context] == PrfC.expandable \
+                and base_category[Key.context] == port_category[Key.context]:
+            assert base_category[Key.context] in (PrfC.A_CLASS, Is.DATADESCRIPTOR), 'Other ' \
+                f'expand context "{base_category[Key.context]}" found for "{name}" attribute.'
             self.queue_attribute_expansion(name, context)
-            if not self._shared[Key.HDR_SENT_DIF]:  # Exact match (so far)
+            if not self._shared[PrToKey.HDR_SENT_DIF]:  # Exact match (so far)
                 if self.get_configuration(Cfg.report_exact):
                     rpt_target.info(
                         f'"{name}" Expand matched other: {context.base.path}¦{context.port.path}')
             return
-        if base_category[Key.DETAIL_CONTENT] is SentinelTag(Tag.SELF_NO_EXPAND) \
-                and base_category[Key.DETAIL_CONTENT] is port_category[Key.DETAIL_CONTENT]:
-            assert base_category[Key.DETAIL_KEY] in (PrfC.DUNDER,), \
-                f'Self tag context "{base_category[Key.DETAIL_KEY]}" found for "{name}" attribute.'
+        if base_category[Key.context] == PrfC.cutoff \
+                and base_category[Key.context] == port_category[Key.context]:
+            assert base_category[Key.context] in (PrfC.DUNDER,), \
+                f'Self tag context "{base_category[Key.context]}" found for "{name}" attribute.'
             # print('Self:No Expand context')
             return
         self.handle_matched_routine(name, context, base_category, port_category)
@@ -801,24 +793,30 @@ class ProfilePrototype:
             port_category (tuple): the port implementation function signature information
                 MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
         """
-        assert isinstance(base_category[Key.DETAIL_CONTENT], tuple), \
-            f'{name} handling category 1 is {type(base_category[Key.DETAIL_KEY])} ' + \
-            f'instead of tuple.\n{base_category}\n{port_category}'
-        assert base_category[Key.DETAIL_KEY] in (Is.ROUTINE,), 'unhandled' \
-            f' "{base_category[Key.DETAIL_KEY]}" context 0.\n{base_category}\n{port_category}'
-        assert isinstance(base_category[Key.DETAIL_CONTENT], tuple) and \
-            isinstance(port_category[Key.DETAIL_CONTENT], tuple), \
-            '"routine" category[Key.DETAIL_CONTENT], ' \
-            f'{type(base_category[Key.DETAIL_CONTENT]).__name__}, ' + \
-            f'{type(port_category[Key.DETAIL_CONTENT]).__name__}, not tuple, tuple'
+        assert isinstance(base_category[Key.context], str), \
+            f'{name} handling category 1b is {type(base_category[Key.context])} ' + \
+            f'instead of str.\n{base_category}\n{port_category}'
+        assert isinstance(port_category[Key.context], str), \
+            f'{name} handling category 1p is {type(port_category[Key.context])} ' + \
+            f'instead of str.\n{base_category}\n{port_category}'
+        assert base_category[Key.context] in (Is.ROUTINE,), 'unhandled' \
+            f' "{base_category[Key.context]}" context 0b.\n{base_category}\n{port_category}'
+        assert port_category[Key.context] in (Is.ROUTINE,), 'unhandled' \
+            f' "{port_category[Key.context]}" context 0p.\n{base_category}\n{port_category}'
+        assert isinstance(base_category[Key.detail], tuple) and \
+            isinstance(port_category[Key.detail], tuple), \
+            '"routine" category[Key.detail], ' \
+            f'{type(base_category[Key.detail]).__name__}, ' + \
+            f'{type(port_category[Key.detail]).__name__}, not tuple, tuple'
         # print(f'{base_category = }')
         ele_cnt = 3
-        assert len(base_category[Key.DETAIL_CONTENT]) == ele_cnt and \
-            len(port_category[Key.DETAIL_CONTENT]) == ele_cnt, \
-            'len "routine category[Key.DETAIL_CONTENT] ' \
-            f'{len(base_category[Key.DETAIL_CONTENT])}, ' + \
-            f'{len(port_category[Key.DETAIL_CONTENT])}' + \
+        assert len(base_category[Key.detail]) == ele_cnt and \
+            len(port_category[Key.detail]) == ele_cnt, \
+            'len "routine category[Key.detail] ' \
+            f'{len(base_category[Key.detail])}, ' + \
+            f'{len(port_category[Key.detail])}' + \
             f' not {ele_cnt}, {ele_cnt}'
+        # tuple of ParameterDetail, StrOrTag, strOrTag
 
     def handle_matched_routine(self, name: str, context: MatchPair,
                                base_category: MethodSignatureDetail,
@@ -834,34 +832,34 @@ class ProfilePrototype:
                 MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
         """
         self._sanity_check_matched_categories(name, base_category, port_category)
-        destination: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
-        base_sig = base_category[Key.DETAIL_CONTENT]
-        port_sig = port_category[Key.DETAIL_CONTENT]
-        base_iter = tuple_2_generator(base_sig[Key.SIG_PARAMETERS])
-        port_iter = tuple_2_generator(port_sig[Key.SIG_PARAMETERS])
+        destination: logging.Logger = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
+        base_sig = base_category[Key.detail]
+        port_sig = port_category[Key.detail]
+        base_iter = tuple_2_generator(base_sig[Key.sig_parameters])
+        port_iter = tuple_2_generator(port_sig[Key.sig_parameters])
         base_det: ParameterDetail = next(base_iter, self.END_DETAIL)
         port_det: ParameterDetail = next(port_iter, self.END_DETAIL)
-        self._shared[Key.HDR_SENT_SIG] = False
-        self._shared[Key.POS_IDX] = -1
-        self._shared[Key.KEY_IDX] = -1
+        self._shared[PrToKey.HDR_SENT_SIG] = False
+        self._shared[PrToKey.POS_IDX] = -1
+        self._shared[PrToKey.KEY_IDX] = -1
         while self.END_DETAIL not in (base_det, port_det):
-            self._shared[Key.POS_IDX] += 1
+            self._shared[PrToKey.POS_IDX] += 1
             if Match.positional in base_det.kind and Match.positional in port_det.kind:
-                self._handle_matched_parameters(name, context, Key.POS_PARAM_TYPE,
+                self._handle_matched_parameters(name, context, PrToKey.POS_PARAM_TYPE,
                                                 base_det, port_det)
                 base_det = next(base_iter, self.END_DETAIL)
                 port_det = next(port_iter, self.END_DETAIL)
                 continue
             if Match.positional in base_det.kind:
                 self.send_match_sig_header(name, context)
-                destination.info(
-                    f'{self._param_prefix(Key.POS_PARAM_TYPE)} in base but not port: {base_det}')
+                destination.info(f'{self._param_prefix(PrToKey.POS_PARAM_TYPE)} ' +
+                                 'in base but not port: {base_det}')
                 base_det = next(base_iter, self.END_DETAIL)
                 continue
             if Match.positional in port_det.kind:
                 self.send_match_sig_header(name, context)
-                destination.info(
-                    f'{self._param_prefix(Key.POS_PARAM_TYPE)} in port but not base: {port_det}')
+                destination.info(f'{self._param_prefix(PrToKey.POS_PARAM_TYPE)} ' +
+                                 f'in port but not base: {port_det}')
                 port_det = next(port_iter, self.END_DETAIL)
                 continue
             # handle keyword (non-positional) parameters
@@ -871,35 +869,35 @@ class ProfilePrototype:
 
             # Currently *assumes* that keyword entries are in the same order for base and port.
             # If they are not, mismatches will be reported.
-            self._shared[Key.KEY_IDX] += 1
+            self._shared[PrToKey.KEY_IDX] += 1
             if base_det is not None and port_det is not None:
-                self._handle_matched_parameters(name, context, Key.KEY_PARAM_TYPE,
+                self._handle_matched_parameters(name, context, PrToKey.KEY_PARAM_TYPE,
                                                 base_det, port_det)
                 base_det = next(base_iter, self.END_DETAIL)
                 port_det = next(port_iter, self.END_DETAIL)
                 continue
             if base_det is not None:
                 self.send_match_sig_header(name, context)
-                destination.info(f'{self._param_prefix(Key.KEY_PARAM_TYPE)} in base ' +
+                destination.info(f'{self._param_prefix(PrToKey.KEY_PARAM_TYPE)} in base ' +
                                  f'but not port: {base_det}')
                 base_det = next(base_iter, self.END_DETAIL)
                 continue
             self.send_match_sig_header(name, context)
-            destination.info(f'{self._param_prefix(Key.KEY_PARAM_TYPE)} in port ' +
+            destination.info(f'{self._param_prefix(PrToKey.KEY_PARAM_TYPE)} in port ' +
                              f'but not base: {port_det}')
             port_det = next(port_iter, self.END_DETAIL)
 
-        if base_sig[Key.SIG_RETURN] != port_sig[Key.SIG_RETURN] and \
-                base_sig[Key.SIG_RETURN] is SentinelTag(Tag.NO_RETURN_ANNOTATION) and \
+        if base_sig[Key.sig_return] != port_sig[Key.sig_return] and \
+                base_sig[Key.sig_return] is SentinelTag(Tag.NO_RETURN_ANNOTATION) and \
                 Ignore.return_context not in self.get_configuration(Cfg.ignore_annotation):
             self.send_match_sig_header(name, context)
             destination.info('    routine return annotation: base '
                 f'{_no_return_annotation(base_sig)}; port {_no_return_annotation(port_sig)}')
-        if base_sig[Key.SIG_DOC] != port_sig[Key.SIG_DOC] and \
+        if base_sig[Key.sig_doc] != port_sig[Key.sig_doc] and \
                 Ignore.method_context not in self.get_configuration(Cfg.ignore_docstring):
             self.send_match_sig_header(name, context)
-            destination.info(f'    routine docstring: base ¦{base_sig[Key.SIG_DOC]}¦; ' +
-                             f'port ¦{port_sig[Key.SIG_DOC]}¦')
+            destination.info(f'    routine docstring: base ¦{base_sig[Key.sig_doc]}¦; ' +
+                             f'port ¦{port_sig[Key.sig_doc]}¦')
 
     def _handle_matched_parameters(self, name: str, context: MatchPair, param_type: str,
             base_det: ParameterDetail, port_det: ParameterDetail) -> None:
@@ -913,7 +911,7 @@ class ProfilePrototype:
             base_det (ParameterDetail): the base implementation parameter signature information
             port_det (ParameterDetail): the port implementation parameter signature information
         """
-        destination: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
+        destination: logging.Logger = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
         if base_det.name != port_det.name:
             self.send_match_sig_header(name, context)
             destination.info(f'{self._param_prefix(param_type)} name: ' +
@@ -938,7 +936,7 @@ class ProfilePrototype:
 
     def _param_prefix(self, param_type: str) -> str:
         """formatted indexed positional parameter information prefix"""
-        return f'    {param_type} parameter {self._shared[Key.POS_IDX]}'
+        return f'    {param_type} parameter {self._shared[PrToKey.POS_IDX]}'
 
     def handle_unmatched_attribute(self, context: MatchPair, base_or_port: str, name: str,
                                    profile: AttributeProfile) -> None:
@@ -958,35 +956,36 @@ class ProfilePrototype:
         #     rpt_key = Key.REPORT_NOT_IMPLEMENTED
         #     context_path = context.base.path
         # else:
-        #     rpt_key = Key.REPORT_EXTENSION
+        #     rpt_key = PrToKey.REPORT_EXTENSION
         #     context_path = context.port.path
-        rpt_key = Key.REPORT_NOT_IMPLEMENTED if base_or_port == 'base' else Key.REPORT_EXTENSION
+        rpt_key = PrToKey.REPORT_NOT_IMPLEMENTED if base_or_port == 'base' \
+            else PrToKey.REPORT_EXTENSION
         rpt_target = self._reports[rpt_key]
         context_path = context.base.path if base_or_port == 'base' else context.port.path
         if report_profile_data_exceptions(rpt_target, name, profile):
             return
 
         # pylint:disable=logging-fstring-interpolation
-        if profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] == 'routine':
-            sig = profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]
-            if not (isinstance(sig, tuple) and len(sig) == Key.SIG_ELEMENTS
-                    and isinstance(sig[Key.SIG_PARAMETERS], tuple)):
+        if profile[Key.details][Key.context] == 'routine':
+            sig = profile[Key.details][Key.detail]
+            if not (isinstance(sig, tuple) and len(sig) == Key.sig_elements
+                    and isinstance(sig[Key.sig_parameters], tuple)):
                 rpt_target.error(f'****1 {context_path} {type(sig).__name__ = } {len(sig) = } ' +
-                    f'{type(sig[Key.SIG_PARAMETERS]).__name__ = } ' +
-                    f'{type(sig[Key.SIG_RETURN]).__name__ = } ****')
+                    f'{type(sig[Key.sig_parameters]).__name__ = } ' +
+                    f'{type(sig[Key.sig_return]).__name__ = } ****')
                 return
-            rpt_target.info(f'{context_path}, {name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
-                f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
-                f'{profile[Key.PROFILE_TAGS]}, {len(sig[Key.SIG_PARAMETERS])}')
-            for fld in sig[Key.SIG_PARAMETERS]:
+            rpt_target.info(f'{context_path}, {name}, {profile[Key.annotation]}, ' +
+                f'{profile[Key.data_type]}, {profile[Key.source]}, ' +
+                f'{profile[Key.tags]}, {len(sig[Key.sig_parameters])}')
+            for fld in sig[Key.sig_parameters]:
                 assert isinstance(fld, ParameterDetail), f'{type(fld) = }¦{sig =}'
                 rpt_target.info(f'    {fld}')
-            rpt_target.info(f'    {sig[Key.SIG_RETURN]}')
+            rpt_target.info(f'    {sig[Key.sig_return]}')
         else:
-            rpt_target.info(f'{context_path}, {name}, {profile[Key.PROFILE_ANNOTATION]}, ' +
-                f'{profile[Key.PROFILE_TYPE]}, {profile[Key.PROFILE_SOURCE]}, ' +
-                f'{profile[Key.PROFILE_TAGS]},')
-            rpt_target.info(f'    {profile[Key.PROFILE_DETAIL]}')
+            rpt_target.info(f'{context_path}, {name}, {profile[Key.annotation]}, ' +
+                f'{profile[Key.data_type]}, {profile[Key.source]}, ' +
+                f'{profile[Key.tags]},')
+            rpt_target.info(f'    {profile[Key.details]}')
 
     def queue_attribute_expansion(self, name: str, context: MatchPair) -> None:
         """
@@ -1008,24 +1007,24 @@ class ProfilePrototype:
         if self.get_configuration(Cfg.report_matched):
             print(f'\nMatched in "{self._base_module}" base and "{self._port_module}"'
                 ' port implementations.')
-            self.report_section_details(Key.REPORT_MATCHED_ATTRIBUTE)
+            self.report_section_details(PrToKey.REPORT_MATCHED_ATTRIBUTE)
 
         if self.get_configuration(Cfg.report_not_implemented):
             print(f'\nNot Implemented in "{self._port_module}" port implementation.')
             print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
                   'Details¦Fields')
-            self.report_section_details(Key.REPORT_NOT_IMPLEMENTED)
+            self.report_section_details(PrToKey.REPORT_NOT_IMPLEMENTED)
 
         if self.get_configuration(Cfg.report_extension):
             print(f'\nExtensions in the "{self._port_module}" port implementation.')
             print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
                   'Details¦Fields')
-            self.report_section_details(Key.REPORT_EXTENSION)
+            self.report_section_details(PrToKey.REPORT_EXTENSION)
 
         if self.get_configuration(Cfg.report_skipped):
             print('\nSkipped attributes for '
                 f'"{self._base_module}" (base) and "{self._port_module}" (port)')
-            self.report_section_details(Key.REPORT_ATTRIBUTE_SKIPPED)
+            self.report_section_details(PrToKey.REPORT_ATTRIBUTE_SKIPPED)
 
     def report_section_details(self, section: str) -> None:
         """
@@ -1046,10 +1045,10 @@ class ProfilePrototype:
             name (str) the name of the attribute being reported
             context (MatchPair): The context data for the base and port implementations.
         """
-        target: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
-        if not self._shared[Key.HDR_SENT_DIF]:
+        target: logging.Logger = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
+        if not self._shared[PrToKey.HDR_SENT_DIF]:
             target.info(f'"{name}" Differences: {context.base.path}¦{context.port.path}')
-            self._shared[Key.HDR_SENT_DIF] = True
+            self._shared[PrToKey.HDR_SENT_DIF] = True
 
     def send_match_sig_header(self, name: str, context: MatchPair) -> None:
         """
@@ -1060,10 +1059,10 @@ class ProfilePrototype:
             context (MatchPair): The context data for the base and port implementations.
         """
         self.send_match_diff_header(name, context)
-        target: logging.Logger = self._reports[Key.REPORT_MATCHED_ATTRIBUTE]
-        if not self._shared[Key.HDR_SENT_SIG]:
+        target: logging.Logger = self._reports[PrToKey.REPORT_MATCHED_ATTRIBUTE]
+        if not self._shared[PrToKey.HDR_SENT_SIG]:
             target.info('  Method Parameters:')
-            self._shared[Key.HDR_SENT_SIG] = True
+            self._shared[PrToKey.HDR_SENT_SIG] = True
 
 def pretty_annotation(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
@@ -1084,7 +1083,7 @@ def _no_return_annotation(sig_data: tuple) -> str:
     Args:
         sig_data (tuple): signature profile information for a routine
     """
-    return pretty_annotation(sig_data[Key.SIG_RETURN], SentinelTag(Tag.NO_RETURN_ANNOTATION))
+    return pretty_annotation(sig_data[Key.sig_return], SentinelTag(Tag.NO_RETURN_ANNOTATION))
 
 def pretty_default(default: Hashable) -> str:
     """
@@ -1114,69 +1113,92 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
     # AttributeProfile
     assert isinstance(profile, tuple), \
         f'{type(profile).__name__ = } ¦ {name}¦{profile}'
-    assert len(profile) == Key.PROFILE_ELEMENTS, \
+    assert len(profile) == Key.root_elements, \
         f'{len(profile) = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_ANNOTATION], StrOrTag), \
-        f'{type(profile[Key.PROFILE_ANNOTATION]).__name__ = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_TYPE], str), \
-        f'{type(profile[Key.PROFILE_TYPE]).__name__ = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_SOURCE], tuple), \
-        f'{type(profile[Key.PROFILE_SOURCE]).__name__ = } ¦ {name}¦{profile}'
-    assert len(profile[Key.PROFILE_SOURCE]) == Key.SOURCE_ELEMENTS, \
-        f'{len(profile[Key.PROFILE_SOURCE]).__name__ = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE], (str, SentinelTag)), \
-        f'{type(profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE]).__name__ = }' + \
+    assert isinstance(profile[Key.annotation], StrOrTag), \
+        f'{type(profile[Key.annotation]).__name__ = } ¦ {name}¦{profile}'
+    assert isinstance(profile[Key.data_type], str), \
+        f'{type(profile[Key.data_type]).__name__ = } ¦ {name}¦{profile}'
+    assert isinstance(profile[Key.source], tuple), \
+        f'{type(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
+    assert len(profile[Key.source]) == Key.source_elements, \
+        f'{len(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
+    assert isinstance(profile[Key.source][Key.file], (str, SentinelTag)), \
+        f'{type(profile[Key.source][Key.file]).__name__ = }' + \
         f' ¦ {name}¦{profile}'
-    if isinstance(profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE], SentinelTag):
-        assert profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE] is SentinelTag(Tag.NO_SOURCE), \
-            f'{type(profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE]).__name__ = }' + \
+    if isinstance(profile[Key.source][Key.file], SentinelTag):
+        assert profile[Key.source][Key.file] is SentinelTag(Tag.NO_SOURCE), \
+            f'{type(profile[Key.source][Key.file]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
-        if profile[Key.PROFILE_SOURCE][Key.SOURCE_MODULE] is not None:
-            assert profile[Key.PROFILE_SOURCE][Key.SOURCE_MODULE] is implementation.module, \
-                f'{profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE]} ' + \
-                f'{type(profile[Key.PROFILE_SOURCE][Key.SOURCE_MODULE]).__name__ = }' + \
+        if profile[Key.source][Key.module] is not None:
+            assert profile[Key.source][Key.module] is implementation.module, \
+                f'{profile[Key.source][Key.file]} ' + \
+                f'{type(profile[Key.source][Key.module]).__name__ = }' + \
                 f' ¦ {name}¦{profile}'
     else:
-        assert profile[Key.PROFILE_SOURCE][Key.SOURCE_MODULE] is not None, \
-            f'{profile[Key.PROFILE_SOURCE][Key.SOURCE_FILE]} ' + \
-            f'{type(profile[Key.PROFILE_SOURCE][Key.SOURCE_MODULE]).__name__ = }' + \
+        assert profile[Key.source][Key.module] is not None, \
+            f'{profile[Key.source][Key.file]} ' + \
+            f'{type(profile[Key.source][Key.module]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_TAGS], tuple), \
-        f'{type(profile[Key.PROFILE_TAGS]).__name__ = } ¦ {name}¦{profile}'
-    # assert profile[Key.PROFILE_TAGS] contains 0 or more str
-    assert isinstance(profile[Key.PROFILE_DETAIL], tuple), \
-        f'{type(profile[Key.PROFILE_DETAIL]).__name__ = } ¦ {name}¦{profile}'
-    assert len(profile[Key.PROFILE_DETAIL]) == Key.DETAIL_ELEMENTS, \
-        f'{len(profile[Key.PROFILE_DETAIL]) = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY], StrOrTag), \
-        f'{type(profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY]).__name__ = }' + \
-        ' ¦ {name}¦{profile_data}'
-    if isinstance(profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY], str):
-        assert profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] in (Is.ROUTINE, Is.MODULE,
-                Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.NAMEDTUPLE,
-                PrfC.PKG_CLS_INST, PrfC.DUNDER,
-            ), f'str but {profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] = } ¦ {name}¦{profile}'
-        if profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
-            assert profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT] \
-                is SentinelTag(Tag.OTHER_EXPAND), 'expected expand: ' \
-                f'{type(profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]).__name__}' + \
-                f' ¦ {name}¦{profile}'
-        elif profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] == Is.MODULE:
-            raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
-        # something else: app error?
-    elif profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] is SentinelTag(Tag.DATA_LEAF):
-        assert isinstance(profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT], (type(None), str,
+    assert isinstance(profile[Key.tags], tuple), \
+        f'{type(profile[Key.tags]).__name__ = } ¦ {name}¦{profile}'
+    # assert profile[Key.tags] contains 0 or more str
+    assert isinstance(profile[Key.details], tuple), \
+        f'{type(profile[Key.details]).__name__ = } ¦ {name}¦{profile}'
+    assert len(profile[Key.details]) == Key.detail_elements, \
+        f'{len(profile[Key.details]) = } ¦ {name}¦{profile}'
+    if isinstance(profile[Key.details][Key.context], SentinelTag):
+        LoggerMixin.get_logger().error('incomplete refactoring. Found '
+            f'{profile[Key.details][Key.context]} being used as the context key for profile ' +
+            f'details.\n{name}¦{profile[Key.details]}')
+        raise ApplicationLogicError(
+            f'incomplete refactoring: found {profile[Key.details][Key.context]} used for profile '
+            'details context. Continue the refactoring')
+    if not isinstance(profile[Key.details][Key.context], str):
+        raise ApplicationLogicError(
+            f'profile details context "{profile[Key.details][Key.context]}" should be a str: ' +
+            f'found {type(profile[Key.details][Key.context])}.')
+    assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE,
+            Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.namedtuple,
+            PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
+            PrfC.signature, PrfC.unhandled_value
+        ), f'str but {profile[Key.details][Key.context] = } ¦ {name}¦{profile}'
+    if profile[Key.details][Key.context] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
+        assert profile[Key.details][Key.detail] \
+            is SentinelTag(PrfC.expandable), 'expected expand: ' \
+            f'{type(profile[Key.details][Key.detail]).__name__}' + \
+            f' ¦ {name}¦{profile}'
+    elif profile[Key.details][Key.context] == PrfC.DATA_LEAF:
+        assert isinstance(profile[Key.details][Key.detail], (type(None), str,
                 int, float)), \
-            f'leaf but {type(profile[Key.PROFILE_DETAIL][Key.DETAIL_CONTENT]).__name__ = }' + \
+            f'leaf but {type(profile[Key.details][Key.detail]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
-        # pass
+    elif profile[Key.details][Key.context] == PrfC.signature:
+        assert isinstance(profile[Key.details][Key.detail], tuple), \
+            f'signature but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not tuple'
+        assert all(isinstance(ele, ParameterDetail)
+                    for ele in profile[Key.details][Key.detail]), \
+            f'signature but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not all ParameterDetail'
+    elif profile[Key.details][Key.context] == PrfC.namedtuple:
+        assert isinstance(profile[Key.details][Key.detail], str), \
+            f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not str'
+    elif profile[Key.details][Key.context] == Is.ROUTINE:
+        assert isinstance(profile[Key.details][Key.detail], tuple), \
+            f'routing but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not tuple'
+    elif profile[Key.details][Key.context] == Is.MODULE:
+        raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
+    # something else: app error?
     else:
-        assert profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY] is SentinelTag(Tag.DATA_NODE), \
-            f'{type(profile[Key.PROFILE_DETAIL][Key.DETAIL_KEY]).__name__ = } ¦' + \
+        assert profile[Key.details][Key.context] == PrfC.DATA_NODE, \
+            f'{type(profile[Key.details][Key.context]).__name__ = } ¦' + \
             f'{implementation.path}.{name}¦{profile}'
-        assert profile[Key.PROFILE_TAGS] == (), \
-            f'{profile[Key.PROFILE_TAGS] = } ¦{implementation.path}¦{name}¦{profile}'
-        if profile[Key.PROFILE_TYPE] not in ('list', 'dict', 'mappingproxy'):
+        assert profile[Key.tags] == (), \
+            f'{profile[Key.tags] = } ¦{implementation.path}¦{name}¦{profile}'
+        if profile[Key.data_type] not in ('list', 'dict', 'mappingproxy'):
             print(f'****2 {implementation.path} {name = }, {profile} ****')
 
 def report_profile_data_exceptions(destination: logging.Logger, name: str,
@@ -1195,17 +1217,17 @@ def report_profile_data_exceptions(destination: logging.Logger, name: str,
         False when no exception case has been detected
     """
     details_count = len(profile_data)
-    if details_count != Key.PROFILE_ELEMENTS:
+    if details_count != Key.root_elements:
         destination.error(f'****4 {details_count =} ¦ {name}¦{profile_data} ****')
         return True
-    if not isinstance(profile_data[Key.PROFILE_DETAIL], tuple):
+    if not isinstance(profile_data[Key.details], tuple):
         destination.error(
-            f'****5 {type(profile_data[Key.PROFILE_DETAIL]).__name__ =} ¦ {name}¦{profile_data} '
+            f'****5 {type(profile_data[Key.details]).__name__ =} ¦ {name}¦{profile_data} '
             '****')
         return True
-    if len(profile_data[Key.PROFILE_DETAIL]) != Key.DETAIL_ELEMENTS:
+    if len(profile_data[Key.details]) != Key.detail_elements:
         destination.error(
-            f'****6 {len(profile_data[Key.PROFILE_DETAIL]) =} ¦ {name}¦{profile_data} ****')
+            f'****6 {len(profile_data[Key.details]) =} ¦ {name}¦{profile_data} ****')
         return True
     return False
 
