@@ -28,7 +28,7 @@ IniStructureType = Dict[str, Dict[str, Union[str, Dict[str, str]]]]
 
 class LoggerMixin:
     """
-    Provides an interface to allow applications to override the logger instanced used
+    Provides an interface to allow applications to override the logger instance used
     by code in the module
 
     Usage:

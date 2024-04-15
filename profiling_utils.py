@@ -15,13 +15,11 @@ from typing import Hashable, Callable
 from generic_tools import SentinelTag, LoggerMixin, StrOrTag
 from introspection_tools import (
     ObjectContextData, ParameterDetail,
-    Tag as ITag, APKey as Key, ProfileConstant as PrfC, InspectIs as Is,
+    Tag as ITag, AttributeProfileKey as Key, ProfileConstant as PrfC, InspectIs as Is,
     AttributeProfile,
 )
 from app_error_framework import ApplicationLogicError
-# from compare_module_api import AttributeProfile
 
-# def pretty_annotation(annotation: StrOrTag, sentinel: SentinelTag) -> str:
 def annotation_str(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
     Format an annotation string or tag for display.
@@ -39,7 +37,6 @@ def annotation_str(annotation: StrOrTag, sentinel: SentinelTag) -> str:
     """
     return '«none»' if annotation is sentinel else f'"{annotation:s}"'
 
-# def pretty_default(default: Hashable) -> str:
 def default_str(default: Hashable) -> str:
     """
     Format a profile default value or tag for display.
@@ -153,7 +150,6 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
             if profile[Key.data_type] not in ('list', 'dict', 'mappingproxy'):
                 print(f'****2 {implementation.path} {name = }, {profile} ****')
 
-# HPD Calling code adjust when implementing: pass logging method Callable instead of logger;
 def report_profile_data_exceptions(target: Callable, name: str,
                                    profile_data: AttributeProfile) -> bool:
     """

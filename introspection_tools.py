@@ -24,7 +24,7 @@ AttributeProfile = Tuple[StrOrTag,
                          str,
                          Tuple[StrOrTag, types.ModuleType],
                          Tuple[str, ...],
-                         Tuple[tuple, StrOrTag]]
+                         Tuple[str, Union[StrOrTag, tuple, int, float]]]
 """
     parent context typehint annotation
     type
@@ -34,8 +34,17 @@ AttributeProfile = Tuple[StrOrTag,
         «hpd need to expand»
 """
 
+GLOBAL_IS_FUNCTIONS: Tuple[Tuple[str, Callable[[Any], bool]]] = tuple(
+    (name[2:], func)
+    for name, func in sorted(inspect.__dict__.items())
+    if name.startswith('is') and callable(func)
+)
+"""Collect the inspect.is«something» methods one time for use in the module.
+
+Sorted so that tags created iterating over this will be in sorted order as well."""
+
 @dataclass(frozen=True)
-class APKey:
+class AttributeProfileKey:
     """
     Constants indexing and specifying the fields in an AttributeProfile tuple data structure.
     """
@@ -445,22 +454,6 @@ def attribute_name_compare_key(attribute_name: Union[str, Tuple[int, str]]) -> T
     else:
         generated_key = 0  #public
     return generated_key, attribute_name
-
-def get_is_functions() -> Tuple[Tuple[str, Callable[[Any], bool]]]:
-    """
-    collect the inspect.is«something» methods
-
-    sorted so that tags created iterating over this will be in sorted order as well
-
-    Returns:
-        Tuple[Tuple[str, Callable[[Any], bool]]]: A tuple of tuples containing the names of
-            inspect.is… functions (without the leading "is", and a reference to the function.
-    """
-    return tuple((name[2:], func)
-                 for name, func in sorted(inspect.__dict__.items())
-                 if name.startswith('is') and callable(func))
-
-GLOBAL_IS_FUNCTIONS = get_is_functions()
 
 def _verify_is_tags(tags: Tuple[str]) -> None:
     """
