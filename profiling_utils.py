@@ -130,14 +130,29 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
                     int, float)), \
                 f'leaf but {type(profile[Key.details][Key.detail]).__name__ = }' + \
                 f' ¦ {name}¦{profile}'
-        elif profile[Key.details][Key.context] == PrfC.signature:
+        elif profile[Key.details][Key.context] == PrfC.signature or \
+                profile[Key.details][Key.context] == Is.ROUTINE:
             assert isinstance(profile[Key.details][Key.detail], tuple), \
-                f'signature but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+                f'{profile[Key.details][Key.context]} but ' + \
+                f'{type(profile[Key.details][Key.detail]).__name__ = }' + \
+                f' ¦ {name}¦{profile}\nis not tuple'
+            assert len(profile[Key.details][Key.detail]) == Key.sig_elements, \
+                f'{profile[Key.details][Key.context]} but ' + \
+                f'{len(profile[Key.details][Key.detail]) = }' + \
+                f' ¦ {name}¦{profile}\nis not {Key.sig_elements}'
+            assert isinstance(profile[Key.details][Key.detail][Key.sig_parameters], tuple), \
+                f'{profile[Key.details][Key.context]} but ' + \
+                f'{type(profile[Key.details][Key.detail][Key.sig_parameters]).__name__ = }' + \
                 f' ¦ {name}¦{profile}\nis not tuple'
             assert all(isinstance(ele, ParameterDetail)
-                       for ele in profile[Key.details][Key.detail]), \
-                f'signature but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+                       for ele in profile[Key.details][Key.detail][Key.sig_parameters]), \
+                f'{profile[Key.details][Key.context]} but ' + \
+                f'{profile[Key.details][Key.detail][Key.sig_parameters] = }' + \
                 f' ¦ {name}¦{profile}\nis not all ParameterDetail'
+        elif profile[Key.details][Key.context] == PrfC.namedtuple:
+            assert isinstance(profile[Key.details][Key.detail], str), \
+                f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+                f' ¦ {name}¦{profile}\nis not str'
         elif profile[Key.details][Key.context] == Is.MODULE:
             raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
         # something else: app error?
@@ -179,3 +194,7 @@ def report_profile_data_exceptions(target: Callable, name: str,
             f'**** {len(profile_data[Key.details]) =} ¦ {name}¦{profile_data} ****')
         return True
     return False
+
+# cSpell:words DATADESCRIPTOR, DUNDER
+# cSpell:ignore
+# cSpell:allowCompoundWords true

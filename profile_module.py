@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 import logging
 import types
-from typing import Iterable, Union, Tuple, FrozenSet
+from typing import Callable, Iterable, Union, Tuple, Any, FrozenSet
 from app_error_framework import ApplicationLogicError
 from config_package import ProfileConfiguration, Setting
 from generic_tools import (
@@ -46,15 +46,23 @@ class Tag:
 
 class ProfileModule:
     """Manage introspection and api profiling for a single module"""
-    def __init__(self, module_path: str, configuration: ProfileConfiguration):
-        # self.module_path = module_path
+    def __init__(self, module_path: str, configuration: ProfileConfiguration,
+                skip_reporter: Callable[[str, Any], None]):
+        """
+        Initialize the ProfileModule.
+
+        Args:
+            module_path (str): Path to the module to be profiled.
+            configuration (ProfileConfiguration): Configuration settings for profiling.
+            skip_reporter (Callable[[str, Any], None]): A callable that handles skipped attribute
+                reporting. It should accept a message format string and additional arguments
+                to format the string.  A logging method (IE logging.info()) will work.
+        """
         self._cfg = configuration
         self.context_data = ObjectContextData(path=module_path, element=import_module(module_path))
-        self.profile_data = {}
-        self._attr_names: FrozenSet = None
-        self._ignorable_attributes: FrozenSet = frozenset(set())
-        # self._reports[PrToKey.REPORT_ATTRIBUTE_SKIPPED]
-        self._skipped_logger = LoggerMixin.get_logger()  # Temporary
+        self._attr_names = frozenset()
+        self._ignorable_attributes = frozenset()
+        self._report_skipped = skip_reporter
 
     def update_context(self, path: Tuple[str], element: object) -> None:
         """
@@ -144,8 +152,8 @@ class ProfileModule:
         attr_profile = (attribute_name_compare_key(name),) + raw_profile[1:]
 
         if raw_profile[Idx.info_profile] is SentinelTag(ITag.ERROR_ACCESS_FAILURE):
-            self._skipped_logger.error(('**** Error accessing {} "{}" attribute: {}',
-                                        self.context_data.path, name, attr_profile))
+            self._report_skipped('**** Error accessing {} "{}" attribute: {}',
+                                 self.context_data.path, name, attr_profile)
             self.context_data.skipped += 1
             return SentinelTag(Tag.dont_yield)
 
@@ -200,14 +208,9 @@ class ProfileModule:
         """
         assert isinstance(result, tuple), \
             f'skip result expected to be tuple: Found {type(result)} {result}' # DEBUG
-        self._skipped_logger.info(('{} {}', self.context_data.path, result))
+        self._report_skipped(f'{self.context_data.path} {result}')
         self.context_data.skipped += 1
 
-    def get_profile(self):
-        """
-        Return the collected profile data
-        """
-        return self.profile_data
 
 # Usage example:
 def main():
@@ -216,7 +219,7 @@ def main():
     test_logger = LoggerMixin.get_logger() # "profile_module"
     test_logger.addHandler(logging.StreamHandler())
     settings = ProfileConfiguration(test_app, test_logger.name)
-    profile = ProfileModule('logging', settings)
+    profile = ProfileModule('logging', settings, test_logger)
     attr_profile = profile.profile_attributes(False)
     print(next(attr_profile))
 
@@ -227,16 +230,3 @@ if __name__ == '__main__':
 # cSpell:words
 # cSpell:ignore dont
 # cSpell:allowCompoundWords true
-
-# # Usage in compare_module_api
-# base_module_profile = ProfileModule(base_module_path)
-# port_module_profile = ProfileModule(port_module_path)
-
-# base_module_profile.populate_context()
-# port_module_profile.populate_context()
-
-# base_module_profile.profile_attribute()
-# port_module_profile.profile_attribute()
-
-# # Now compare the profile_data of both modules
-# compare_profiles(base_module_profile.get_profile(), port_module_profile.get_profile())

@@ -21,13 +21,17 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue
 import types
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Union, Dict
 
-from app_error_framework import RetryLimitExceeded
-from config_package import ProfileConfiguration, Setting
-# from profiling_utils import annotation_str, default_str, validate_profile_data,
-#     report_profile_data_exceptions
-from introspection_tools import attribute_name_compare_key
+from app_error_framework import RetryLimitExceeded, ApplicationFlagError
+from config_package import ProfileConfiguration, Setting, SetKey
+from profiling_utils import validate_profile_data
+#     annotation_str, default_str, report_profile_data_exceptions
+from introspection_tools import (
+    AttributeProfileKey as APKey,
+    ProfileConstant as PrfC,
+    attribute_name_compare_key,
+)
 from generic_tools import (
     ReportHandler, LoggerMixin,
     generate_random_alphanumeric,
@@ -55,11 +59,12 @@ AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple
 @dataclass(frozen=True)
 class Key:
     """
-    Constants for flags and lookup indexes, to avoid possible typos in strings used to
+    Constants for lookup indexes and keys, to avoid possible typos in strings used to
     reference them.
     """
     compare_name: int = 1
     """index to actual attribute name in (sorted) comparison key"""
+    sent_header_diff: str = 'diff header sent'
 
 @dataclass()
 class MatchPair:
@@ -142,6 +147,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self.settings = ProfileConfiguration(self.APP_NAME, self._logger.name)
         self._logger.setLevel(self.settings[Setting.LOGGING_LEVEL.name])
         self.report: Report = Report()
+        self._shared: Dict[str, Union[int, bool]] = {}
         self.base_module = self.settings.base
         self.port_module = self.settings.port
         self._configure_reporting()
@@ -163,8 +169,9 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         Compares attributes profiles between base and port implementations based on the
         configuration settings.
         """
-        match_pair = MatchPair(base=ProfileModule(self.base_module, self.settings),
-                               port=ProfileModule(self.port_module, self.settings))
+        match_pair = MatchPair(
+            base=ProfileModule(self.base_module, self.settings, self.report.skipped),
+            port=ProfileModule(self.port_module, self.settings, self.report.skipped))
         match_count, not_impl_count, extension_count = 0, 0, 0
         base_skip_count, port_skip_count = 0, 0
         processing_complete = False
@@ -207,13 +214,114 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
               'Extension attributes found.')
         self._report_match_details()
 
+    def _queue_attribute_expansion(self, name: str, context: MatchPair) -> None:
+        """
+        Add an entry to the queue for later profile matching
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+        """
+        self._expand_queue.put(MatchingContext(
+            base_path=context.base.context_data.path + (name,),
+            port_path=context.port.context_data.path + (name,),
+            base_element=getattr(context.base.context_data.element, name, None),
+            port_element=getattr(context.port.context_data.element, name, None),
+        ))
+
     def _handle_matched_attribute(self, context: MatchPair, name: str,
                                  profile_base: Tuple, profile_port: Tuple) -> None:
-        pass  # Stub
+        """
+        Handles attributes that exist in both base and port implementations.
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            profile_base (Tuple): The profile information for the attribute in the base
+                implementation.
+            profile_port (Tuple): The profile information for the attribute in the ported
+                implementation.
+        """
+        validate_profile_data(name, context.base.context_data, profile_base)
+        validate_profile_data(name, context.port.context_data, profile_port)
+        rpt_target = self.report.matched_logger
+        # need to watch for the need to expand both attributes
+        self._shared[Key.sent_header_diff] = False
+        if profile_base[APKey.annotation] != profile_port[APKey.annotation] and \
+                SetKey.scope not in self.settings.get(Setting.IGNORE_ADDED_ANNOTATION):
+            self._send_match_diff_header(name, context)
+            rpt_target.info(f'  Annotation: Base {profile_base[APKey.annotation]};' +
+                            f' Port {profile_port[APKey.annotation]}')
+        if profile_base[APKey.data_type] != profile_port[APKey.data_type]:
+            self._send_match_diff_header(name, context)
+            rpt_target.info(f'  Type: Base {profile_base[APKey.data_type]};' +
+                            f' Port {profile_port[APKey.data_type]}')
+            # 'type' could match 'function'. A class constructor could do the same
+            # as a function: logging._logRecordFactory
+            # doing that sort of match is going to need smarter processing. Currently
+            # a class is tagged for later expansion, while function signature is
+            # handled in the current pass.
+            # ?re-tag the function to be expanded? ?logic to only expand the constructor?
+            # process the class constructor now, and match to function signature?
+            # -- the class is its constructor??
+        if profile_base[APKey.tags] != profile_port[APKey.tags]:
+            self._send_match_diff_header(name, context)
+            rpt_target.info(f'  "is" tags: Base {profile_base[APKey.tags]};' +
+                            f' Port {profile_port[APKey.tags]}')
+        # compare profile_«»[Key.source]. Not expecting to match if part of packages
+        # being compared
+
+        base_category = profile_base[APKey.details]
+        port_category = profile_port[APKey.details]
+        if self._handle_simple_details(name, context, base_category, port_category):
+            return
+        # check if name is published in one implementation but not the other
+        if name in context.base.context_data.published and \
+                name not in context.port.context_data.published:
+            self._send_match_diff_header(name, context)
+            rpt_target.info('  published in base implementation, but not in the port')
+        if name not in context.base.context_data.published and \
+                name in context.port.context_data.published:
+            self._send_match_diff_header(name, context)
+            rpt_target.info('  published in port implementation, but not in the base')
+        if base_category[APKey.context] == PrfC.DATA_NODE:
+            self._queue_attribute_expansion(name, context)
+            if not self._shared[Key.sent_header_diff]:  # Exact match (so far)
+                if self.settings.get(Setting.REPORT_EXACT_MATCH):
+                    rpt_target.info(f'"{name}" Expand matched node: ' +
+                        f'{context.base.context_data.path}¦{context.port.context_data.path}')
+            return
+        if base_category[APKey.context] in (
+                PrfC.A_CLASS, PrfC.DATA_LEAF, PrfC.unhandled_value):
+            self._send_match_diff_header(name, context)
+            rpt_target.info(f'  compare context: Base {base_category};' +
+                            f' Port {port_category}')
+            return
+        self._handle_str_category(name, context, base_category, port_category)
+
+    def _send_match_diff_header(self, name: str, context: MatchPair) -> None:
+        """
+        Send a (report detail block) header line, if it has not yet been sent
+
+        Args:
+            name (str) the name of the attribute being reported
+            context (MatchPair): The context data for the base and port implementations.
+        """
+        if not self._shared[Key.sent_header_diff]:
+            self.report.matched(f'"{name}" Differences: {context.base.context_data.path}¦' +
+                                f'{context.port.context_data.path}')
+            self._shared[Key.sent_header_diff] = True
+
     def _handle_unmatched_attribute(self, context: MatchPair, base_or_port: str, name: str,
                                    profile: AttributeProfile) -> None:
         pass  # Stub
     def _report_match_details(self) -> None:
+        pass  # Stub
+    def _handle_simple_details(self, name: str, context: MatchPair,
+            base_category: Tuple[StrOrTag, tuple], port_category: Tuple[StrOrTag, tuple]):
+        pass  # Stub
+    def _handle_str_category(self, name: str, context: MatchPair, base_category: Tuple,
+                             port_category: Tuple) -> None:
         pass  # Stub
 
 def _initialize_exception_logging(log_file: Path = 'errors.log',
@@ -258,8 +366,8 @@ def reporting_logger(name_prefix: str, *, retries: int = 3) -> logging.Logger:
     """
     # This check is more restrictive than really necessary, but is in line with
     # the intended usage.
-    assert isinstance(name_prefix, str) and name_prefix.isidentifier, \
-        f'prefix {repr(name_prefix)} expected to be a valid identifier'
+    if not isinstance(name_prefix, str) and name_prefix.isidentifier:
+        raise ApplicationFlagError(f'prefix {repr(name_prefix)} expected to be a valid identifier')
     report_handler = ReportHandler()
     report_handler.setLevel(logging.DEBUG)
     new_logger = get_unique_logger(name_prefix, retries=retries)

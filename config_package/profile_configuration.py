@@ -67,6 +67,26 @@ class IniKey:
     Used for introspection with getattr(IniKey, set_entry)'''
 
 @dataclass(frozen=True)
+class SetKey:
+    """
+    Constants for set entries for settings that can have multiple (concurrent) values
+    """
+    all: str = 'all'
+    public: str = 'public'
+    published: str = 'published'
+    debug: str = 'DEBUG'
+    info: str = 'INFO'
+    warning: str = 'WARNING'
+    error: str = 'ERROR'
+    critical: str = 'CRITICAL'
+    module: str = 'module'
+    class_key: str = 'class'
+    method: str = 'method'
+    parameter: str = 'parameter'
+    return_key: str = 'return'
+    scope: str = 'scope'
+
+@dataclass(frozen=True)
 class CfgKey:
     """
     keys for configuration setting entries.
@@ -117,12 +137,13 @@ class CfgKey:
     and command line arguments'''
 
     # <storage_key>_<validation_type>: FrozenSet = frozenset({})
-    scope_choices: FrozenSet = frozenset({'all', 'public', 'published'})
-    loglevel_choices: FrozenSet = frozenset({'DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL'})
+    scope_choices: FrozenSet = frozenset({SetKey.all, SetKey.public, SetKey.published})
+    loglevel_choices: FrozenSet = frozenset({SetKey.debug, SetKey.info, SetKey.warning,
+                                             SetKey.error, SetKey.critical})
     '''valid choices for each configuration function (storage key) that must have
     one of a fixed set of values'''
-    docstring_contexts: FrozenSet = frozenset({'module', 'class', 'method'})
-    annotation_contexts: FrozenSet = frozenset({'parameter', 'return', 'scope'})
+    docstring_contexts: FrozenSet = frozenset({SetKey.module, SetKey.class_key, SetKey.method})
+    annotation_contexts: FrozenSet = frozenset({SetKey.parameter, SetKey.return_key, SetKey.scope})
     '''keywords for each configuration function (storage key) that can be set to 'all', or
     to a comma-separated list of keywords. Each keyword can be negated by prefixing with
     Part.remove_prefix
