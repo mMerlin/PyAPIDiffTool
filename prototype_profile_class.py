@@ -905,7 +905,7 @@ class ProfilePrototype:
             destination.info(f'    routine docstring: base ¦{base_sig[APKey.sig_doc]}¦; ' +
                              f'port ¦{port_sig[APKey.sig_doc]}¦')
 
-    def _handle_matched_parameters(self, name: str, context: MatchPair, param_type: str,
+    def _handle_matched_parameters(self, name: str, context: MatchPair, param_type: str, # pylint:disable=too-many-arguments
             base_det: ParameterDetail, port_det: ParameterDetail) -> None:
         """
         Handle reporting miss-matches between base and port positional parameter details

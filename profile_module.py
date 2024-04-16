@@ -3,9 +3,16 @@
 
 """manage profiling information for a single module"""
 
-import types
+from dataclasses import dataclass
 import logging
+import types
 from typing import Iterable, Union, Tuple, FrozenSet
+from app_error_framework import ApplicationLogicError
+from config_package import ProfileConfiguration, Setting
+from generic_tools import (
+    SentinelTag, LoggerMixin,
+    import_module,
+)
 from introspection_tools import (
     ObjectContextData,
     AttributeProfileKey as APKey,
@@ -15,13 +22,8 @@ from introspection_tools import (
     get_attribute_info,
     populate_object_context,
 )
-from generic_tools import (
-    SentinelTag, LoggerMixin,
-    import_module,
-)
-from config_package import ProfileConfiguration, Setting
-from app_error_framework import ApplicationLogicError
 
+@dataclass(frozen=True)
 class Idx:
     """
     Named constants for lookup indices and keys
@@ -33,6 +35,7 @@ class Idx:
     public_scope: str = 'public'
     published_scope: str = 'published'
 
+@dataclass(frozen=True)
 class Tag:
     """Constants for SentinelTag instances, to avoid possible typos in strings used to
     create or compare them.
@@ -52,6 +55,17 @@ class ProfileModule:
         self._ignorable_attributes: FrozenSet = frozenset(set())
         # self._reports[PrToKey.REPORT_ATTRIBUTE_SKIPPED]
         self._skipped_logger = LoggerMixin.get_logger()  # Temporary
+
+    def update_context(self, path: Tuple[str], element: object) -> None:
+        """
+        change the context information for a specific path and element, to handle recursing into
+        the module information.
+
+        Args:
+            path (Tuple): path to object, normally starting at the root module
+            element (object): the element to continue profiling from)
+        """
+        self.context_data = ObjectContextData(path=path, element=element)
 
     def profile_attributes(self, use_all_scope: bool) -> Iterable[Tuple[str, Tuple]]:
         """
@@ -104,7 +118,6 @@ class ProfileModule:
                 if self.context_data.published else self.context_data.public,
             Idx.public_scope: self.context_data.public
         }.get(attr_scope, self.context_data.all)
-
 
     def _profile_attribute(self, name: str) -> Union[
             Tuple[Tuple[int, str], Tuple], SentinelTag]:
