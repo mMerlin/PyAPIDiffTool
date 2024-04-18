@@ -10,31 +10,61 @@ creating validated configuration settings.
 
 """
 
-import sys
-from typing import Union, Dict, Any, FrozenSet, Set
-from dataclasses import dataclass, field
-from collections import namedtuple
 import argparse
+from collections import namedtuple
 import configparser
 import copy
-from pathlib import Path
+from dataclasses import dataclass, field
+from enum import Enum, auto
 import logging
+from pathlib import Path
+import sys
+from typing import Union, Dict, Any, FrozenSet, Set
 from generic_tools import (
     SentinelTag, RunAndExitAction, IniStr, IniStructureType,
     add_tri_state_argument, validate_module_path, make_all_or_keys_validator,
     attribute_names_validator, get_config_path, get_config_file, update_set_keywords_from_string,
     update_set_keywords_from_dict, validate_attribute_names, generate_ini_file
 )
-from .setting_enum import Setting
 
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
-SettingKeys = namedtuple('SettingKeys', ['settings', 'ini', 'cli'])
-'''
-Keys (str) to access settings information in different contexts
-settings: the internal configuration dictionary key
-ini: the key in an ini configuration file
-cli: the key to parsed command line argument information
-'''
+
+@dataclass(frozen=True)
+class CfgFld:
+    """Constants for names of ProfileCOnfiguration fields, to be able to use named constants
+    instead of literal value when referencing the __dict__ fields."""
+    # pylint:disable=too-many-instance-attributes
+    base: str = 'base'
+    port: str = 'port'
+    scope: str = 'scope'
+    logging_level: str = 'logging_level'
+    skip_attributes_global: str = 'skip_attributes_global'
+    skip_attributes_module: str = 'skip_attributes_module'
+    skip_attributes_class: str = 'skip_attributes_class'
+    docstring_ignore_module: str = 'docstring_ignore_module'
+    docstring_ignore_class: str = 'docstring_ignore_class'
+    docstring_ignore_method: str = 'docstring_ignore_method'
+    annotation_ignore_scope: str = 'annotation_ignore_scope'
+    annotation_ignore_parameter: str = 'annotation_ignore_parameter'
+    annotation_ignore_return: str = 'annotation_ignore_return'
+    # use_builtin: str = 'use_builtin'
+    report_matched: str = 'report_matched'
+    report_exact: str = 'report_exact'
+    report_not_implemented: str = 'report_not_implemented'
+    report_extensions: str = 'report_extensions'
+    report_skipped: str = 'report_skipped'
+
+@dataclass(frozen=True)
+class IniKey:
+    """
+    keys for configuration (ini) file entries.
+    """
+    main: str = 'Main'
+    report: str = 'Report'
+    ignore: str = 'Ignore'
+    sections: FrozenSet = frozenset({'main', 'report', 'ignore'})
+    '''Keys to other IniKey fields that hold actual lookup values for the related ini sections.
+    Used for introspection with getattr(IniKey, set_entry)'''
 
 @dataclass(frozen=True)
 class Part:
@@ -54,16 +84,63 @@ class Part:
     '''The prefix to use to undo or remove a keyword element from a set'''
 
 @dataclass(frozen=True)
-class IniKey:
+class PrcKey:
     """
-    keys for configuration (ini) file entries.
+    keys for processing configuration information.
     """
-    main: str = 'Main'
-    report: str = 'Report'
-    ignore: str = 'Ignore'
-    sections: FrozenSet = frozenset({'main', 'report', 'ignore'})
-    '''Keys to other IniKey fields that hold actual lookup values for the related ini sections.
-    Used for introspection with getattr(IniKey, set_entry)'''
+    processing_types: FrozenSet = frozenset(
+        {Part.option_type, Part.bool_type, Part.set_type})
+    '''processing category types. Each of these can have an (optional) entry in PrcKey for
+    each configuration section.
+    #<section>_<type>: FrozenSet = frozenset({})
+    The entries there drive the processing to be done when saving configuration file and
+    command line argument values to the corresponding internal application configuration
+    setting.
+    Used by introspection using getattr(PrcKey, section_name + Part.joiner + entry)
+    '''
+
+    #<section>_<type>: FrozenSet = frozenset({})
+    main_options: FrozenSet = frozenset({'scope', 'loglevel'})
+    # main_bools: FrozenSet = frozenset({})  # placeholder
+    # main_sets: FrozenSet = frozenset({})  # placeholder
+    # report_options: FrozenSet = frozenset({})  # placeholder
+    report_bools: FrozenSet = frozenset({'exact', 'matched', 'not_imp', 'extensions', 'skipped'})
+    # report_sets: FrozenSet = frozenset({})  # placeholder
+    # ignore_options: FrozenSet = frozenset({})  # placeholder
+    ignore_bools: FrozenSet = frozenset({'builtin'})
+    ignore_sets: FrozenSet = frozenset(
+        {'global_attr', 'module_attr', 'class_attr', 'docstring', 'annotation'})
+    '''SettingsKeys attribute names grouped by section and needed processing.
+    Every CfgKey field in the configuration storage keys block should be referenced
+    exactly once in the above frozen sets.
+    Used for introspection using getattr(PrcKey, set_entry)
+    Found by introspection by building the field name from «section»_«processing». 'section'
+    is each entry in IniKey.sections, 'processing is each entry in PrcKey.processing_types.
+    '''
+
+class Setting(Enum):
+    """settings that can be accessed from internal configuration"""
+    SCOPE = auto()
+    LOGGING_LEVEL = auto()
+    REPORT_EXACT_MATCH = auto()
+    REPORT_MATCHED = auto()
+    REPORT_NOT_IMPLEMENTED = auto()
+    REPORT_EXTENSION = auto()
+    REPORT_SKIPPED = auto()
+    USE_BUILTIN = auto()
+    IGNORE_MODULE_ATTRIBUTES = auto()
+    IGNORE_GLOBAL_ATTRIBUTES = auto()
+    IGNORE_CLASS_ATTRIBUTES = auto()
+    IGNORE_DOCSTRING = auto()
+    IGNORE_ADDED_ANNOTATION = auto()
+
+SettingKeys = namedtuple('SettingKeys', ['settings', 'ini', 'cli'])
+'''
+Keys (str) to access settings information in different contexts
+settings: the internal configuration dictionary key
+ini: the key in an ini configuration file
+cli: the key to parsed command line argument information
+'''
 
 @dataclass(frozen=True)
 class SetKey:
@@ -86,6 +163,14 @@ class SetKey:
     return_key: str = 'return'
     scope: str = 'scope'
 
+@dataclass(frozen=True)
+class Tag:
+    """
+    keys for SentinelTag instances.
+    """
+    no_entry: str = 'No entry exists'
+
+# Uses Settings and SettingKeys: define after other supporting classes
 @dataclass(frozen=True)
 class CfgKey:
     """
@@ -152,73 +237,6 @@ class CfgKey:
       getattr(CfgKey, <storage_key> + Part.joiner + <validation>)
     Validation is one of Part.choice or Part.context
     '''
-
-@dataclass(frozen=True)
-class PrcKey:
-    """
-    keys for processing configuration information.
-    """
-    processing_types: FrozenSet = frozenset(
-        {Part.option_type, Part.bool_type, Part.set_type})
-    '''processing category types. Each of these can have an (optional) entry in PrcKey for
-    each configuration section.
-    #<section>_<type>: FrozenSet = frozenset({})
-    The entries there drive the processing to be done when saving configuration file and
-    command line argument values to the corresponding internal application configuration
-    setting.
-    Used by introspection using getattr(PrcKey, section_name + Part.joiner + entry)
-    '''
-
-    #<section>_<type>: FrozenSet = frozenset({})
-    main_options: FrozenSet = frozenset({'scope', 'loglevel'})
-    # main_bools: FrozenSet = frozenset({})  # placeholder
-    # main_sets: FrozenSet = frozenset({})  # placeholder
-    # report_options: FrozenSet = frozenset({})  # placeholder
-    report_bools: FrozenSet = frozenset({'exact', 'matched', 'not_imp', 'extensions', 'skipped'})
-    # report_sets: FrozenSet = frozenset({})  # placeholder
-    # ignore_options: FrozenSet = frozenset({})  # placeholder
-    ignore_bools: FrozenSet = frozenset({'builtin'})
-    ignore_sets: FrozenSet = frozenset(
-        {'global_attr', 'module_attr', 'class_attr', 'docstring', 'annotation'})
-    '''SettingsKeys attribute names grouped by section and needed processing.
-    Every CfgKey field in the configuration storage keys block should be referenced
-    exactly once in the above frozen sets.
-    Used for introspection using getattr(PrcKey, set_entry)
-    Found by introspection by building the field name from «section»_«processing». 'section'
-    is each entry in IniKey.sections, 'processing is each entry in PrcKey.processing_types.
-    '''
-
-@dataclass(frozen=True)
-class Tag:
-    """
-    keys for SentinelTag instances.
-    """
-    no_entry: str = 'No entry exists'
-
-@dataclass(frozen=True)
-class CfgFld:
-    """Constants for names of ProfileCOnfiguration fields, to be able to use named constants
-    instead of literal value when referencing the __dict__ fields."""
-    # pylint:disable=too-many-instance-attributes
-    base: str = 'base'
-    port: str = 'port'
-    scope: str = 'scope'
-    logging_level: str = 'logging_level'
-    skip_attributes_global: str = 'skip_attributes_global'
-    skip_attributes_module: str = 'skip_attributes_module'
-    skip_attributes_class: str = 'skip_attributes_class'
-    docstring_ignore_module: str = 'docstring_ignore_module'
-    docstring_ignore_class: str = 'docstring_ignore_class'
-    docstring_ignore_method: str = 'docstring_ignore_method'
-    annotation_ignore_scope: str = 'annotation_ignore_scope'
-    annotation_ignore_parameter: str = 'annotation_ignore_parameter'
-    annotation_ignore_return: str = 'annotation_ignore_return'
-    # use_builtin: str = 'use_builtin'
-    report_matched: str = 'report_matched'
-    report_exact: str = 'report_exact'
-    report_not_implemented: str = 'report_not_implemented'
-    report_extensions: str = 'report_extensions'
-    report_skipped: str = 'report_skipped'
 
 @dataclass(frozen=True)
 class ProfileConfiguration:
