@@ -51,7 +51,7 @@ def default_str(default: Hashable) -> str:
         else '"None"' if default is None else \
         f':{type(default).__name__} "{default}"'
 
-def validate_profile_data(name: str, implementation: ObjectContextData,
+def validate_profile_data(name: str, implementation: ObjectContextData,  # pylint:disable=too-many-branches
                           profile: AttributeProfile) -> None:
     """
     Do some sanity checks on the prototype profile information structure.
@@ -115,7 +115,7 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
             f'profile details context "{profile[Key.details][Key.context]}" should be a str: ' +
             f'found {type(profile[Key.details][Key.context])}.')
     if isinstance(profile[Key.details][Key.context], str):
-        assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE,
+        assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE, Is.BUILTIN,
                 Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.namedtuple,
                 PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
                 PrfC.signature, PrfC.unhandled_value
@@ -153,6 +153,10 @@ def validate_profile_data(name: str, implementation: ObjectContextData,
             assert isinstance(profile[Key.details][Key.detail], str), \
                 f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
                 f' ¦ {name}¦{profile}\nis not str'
+        elif profile[Key.details][Key.context] == Is.BUILTIN:
+            assert profile[Key.details][Key.detail] is SentinelTag(ITag.BUILTIN_EXCLUDE), \
+                f'builtin but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+                f' ¦ {name}¦{profile}\nis not SentinelTag({ITag.BUILTIN_EXCLUDE})'
         elif profile[Key.details][Key.context] == Is.MODULE:
             raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
         # something else: app error?

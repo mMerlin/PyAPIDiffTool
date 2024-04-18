@@ -664,10 +664,11 @@ def details_without_tags(my_object: Any, attr_name: str, attribute: Any, details
         IntrospectionExternExcludeError if process says the attribute should be from an external
             module, but it is found in the __all__ attribute.
     """
-    if str(type(attribute)).startswith(
+    is_obj = hasattr(my_object, '__name__')
+    if is_obj and str(type(attribute)).startswith(
             ProfileConstant.instance_prefix_fmt.format(my_object.__name__)):
         details.append((ProfileConstant.PKG_CLS_INST, SentinelTag(ProfileConstant.expandable)))
-    elif my_object.__name__ not in getattr(attribute, '__module__', my_object.__name__):
+    elif is_obj and my_object.__name__ not in getattr(attribute, '__module__', my_object.__name__):
         if hasattr(my_object, '__all__') and attr_name in my_object.__all__:
             raise IntrospectionExternExcludeError(
                 'Invalid External Exclude case; Exists in __all__: '

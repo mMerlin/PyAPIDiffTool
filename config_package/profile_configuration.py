@@ -11,9 +11,8 @@ creating validated configuration settings.
 """
 
 import sys
-from types import MappingProxyType
 from typing import Union, Dict, Any, FrozenSet, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import namedtuple
 import argparse
 import configparser
@@ -71,6 +70,7 @@ class SetKey:
     """
     Constants for set entries for settings that can have multiple (concurrent) values
     """
+    # pylint:disable=too-many-instance-attributes
     all: str = 'all'
     public: str = 'public'
     published: str = 'published'
@@ -195,28 +195,165 @@ class Tag:
     """
     no_entry: str = 'No entry exists'
 
+@dataclass(frozen=True)
+class CfgFld:
+    """Constants for names of ProfileCOnfiguration fields, to be able to use named constants
+    instead of literal value when referencing the __dict__ fields."""
+    # pylint:disable=too-many-instance-attributes
+    base: str = 'base'
+    port: str = 'port'
+    scope: str = 'scope'
+    logging_level: str = 'logging_level'
+    skip_attributes_global: str = 'skip_attributes_global'
+    skip_attributes_module: str = 'skip_attributes_module'
+    skip_attributes_class: str = 'skip_attributes_class'
+    docstring_ignore_module: str = 'docstring_ignore_module'
+    docstring_ignore_class: str = 'docstring_ignore_class'
+    docstring_ignore_method: str = 'docstring_ignore_method'
+    annotation_ignore_scope: str = 'annotation_ignore_scope'
+    annotation_ignore_parameter: str = 'annotation_ignore_parameter'
+    annotation_ignore_return: str = 'annotation_ignore_return'
+    # use_builtin: str = 'use_builtin'
+    report_matched: str = 'report_matched'
+    report_exact: str = 'report_exact'
+    report_not_implemented: str = 'report_not_implemented'
+    report_extensions: str = 'report_extensions'
+    report_skipped: str = 'report_skipped'
+
+@dataclass(frozen=True)
 class ProfileConfiguration:
     """Manages setting configuration information for comparing module apis
 
-    This create a valid base (default) configuration, loads validated configuration (ini)
+    This creates a valid base (default) configuration, loads validated configuration (ini)
     information, loads configuration data from command line arguments, then provides
-    access (as a dict) to an immutable copy of the resulting settings.
+    access to the immutable settings.
 
     Attributes:
-        _app_name (str): Application name used to look for configuration files
-        _configuration_settings (dict): Stores the application's configuration settings.
-        _immutable_configuration (MappingProxy): Read only copy of configuration
-        _base_module
-        _port_module
-        base
-        port
+        _app_name (str): Application name used to look for configuration files.
+        _logger (Logger): The Logger instance use for report exception details.
+        _configuration_settings (dict): Stores the application's configuration settings
+            while collecting.
+        see CfgFld
     """
+    # pylint:disable=too-many-instance-attributes,no-member
+    base: str
+    """path to base python module"""
+    port: str
+    """path to ported python module"""
+    scope: str  # CfgKey.scope_choices
+    logging_level: str # CfgKey.loglevel_choices
+    skip_attributes_global: FrozenSet[str]
+    """attribute names to always skip"""
+    skip_attributes_module: FrozenSet[str]
+    """attribute names skip in a module"""
+    skip_attributes_class: FrozenSet[str]
+    """attribute names skip in a class"""
+    docstring_ignore_module: bool
+    """ignore differences in module docstrings"""
+    docstring_ignore_class: bool
+    """ignore differences in class docstrings"""
+    docstring_ignore_method: bool
+    """ignore differences in method docstrings"""
+    annotation_ignore_scope: bool
+    """ignore difference when scope annotation exists in port but not in base"""
+    annotation_ignore_parameter: bool
+    """ignore difference when parameter annotation exists in port but not in base"""
+    annotation_ignore_return: bool
+    """ignore difference when return annotation exists in port but not in base"""
+    # use_builtin: bool  # only needed internally ?
+    # """include builtin attribute name exclusions in ignore sets"""
+    report_matched: bool
+    """output report of attributes that exist in both base and port implementation"""
+    report_exact: bool
+    """include exact matches in match report"""
+    report_not_implemented: bool
+    """output report of attributes that exist in base but not in port implementation"""
+    report_extensions: bool
+    """output report of attributes that exist in port but not in base implementation"""
+    report_skipped: bool
+    """output report of attributes that were skipped in port or base implementation"""
+    __annotation__: Dict[str, type] = field(
+        default_factory=lambda: {
+            '_app_name': str,
+            '_logger': logging.Logger,
+            '_configuration_settings': Dict[str, ConfigurationType],
+        },
+        repr=False)
+    """typehints for private attributes created with object.__setattr__"""
+
     def __init__(self, application_name: str, logger_name: str = None):
-        self._app_name: str = application_name
-        self._logger: logging.Logger = logging.getLogger(logger_name
-            if isinstance(logger_name, str) and logger_name else 'root')
-        assert self._logger.handlers, f'The "{self._logger.name}" logger does not have any handler'
-        self._configuration_settings: Dict[str, ConfigurationType] = self._default_configuration()
+        """
+        initialize ProfileConfiguration instance
+
+        Args:
+            application_name (str) The name of the application the configuration is for
+            logger_name (str) The name of the Logger to use for reporting exception details
+        """
+        object.__setattr__(self, '_app_name', application_name)
+        object.__setattr__(self, '_logger', logging.getLogger(logger_name
+            if isinstance(logger_name, str) and logger_name else 'root'))
+        if not self._logger.handlers:
+            raise TypeError(f'The "{self._logger.name}" logger does not have any handler')
+        cli_args: argparse.Namespace = self._get_configuration_settings()
+
+        # Populate the profile configuration fields, and do final validation checks
+        self.__dict__[CfgFld.base] = cli_args.base_module_path
+        self.__dict__[CfgFld.port] = cli_args.port_module_path
+        self.__dict__[CfgFld.scope] = self._configuration_settings[Setting.SCOPE.name]
+        self.__dict__[CfgFld.logging_level] = \
+            self._configuration_settings[Setting.LOGGING_LEVEL.name]
+        self.__dict__[CfgFld.skip_attributes_global] = frozenset(
+            self._configuration_settings[Setting.IGNORE_GLOBAL_ATTRIBUTES.name])
+        self.__dict__[CfgFld.skip_attributes_module] = frozenset(
+            self._configuration_settings[Setting.IGNORE_MODULE_ATTRIBUTES.name])
+        self.__dict__[CfgFld.skip_attributes_class] = frozenset(
+            self._configuration_settings[Setting.IGNORE_CLASS_ATTRIBUTES.name])
+        self.__dict__[CfgFld.docstring_ignore_module] = SetKey.module in \
+            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+        self.__dict__[CfgFld.docstring_ignore_class] = SetKey.class_key in \
+            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+        self.__dict__[CfgFld.docstring_ignore_method] = SetKey.method in \
+            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+        self.__dict__[CfgFld.annotation_ignore_scope] = SetKey.scope in \
+            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+        self.__dict__[CfgFld.annotation_ignore_parameter] = SetKey.parameter in \
+            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+        self.__dict__[CfgFld.annotation_ignore_return] = SetKey.return_key in \
+            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+        # self.__dict__[CfgFld.use_builtin] = self._configuration_settings[Setting.USE_BUILTIN.name]
+        self.__dict__[CfgFld.report_matched] = \
+            self._configuration_settings[Setting.REPORT_MATCHED.name]
+        self.__dict__[CfgFld.report_exact] = \
+            self._configuration_settings[Setting.REPORT_EXACT_MATCH.name]
+        self.__dict__[CfgFld.report_not_implemented] = \
+            self._configuration_settings[Setting.REPORT_NOT_IMPLEMENTED.name]
+        self.__dict__[CfgFld.report_extensions] = \
+            self._configuration_settings[Setting.REPORT_EXTENSION.name]
+        self.__dict__[CfgFld.report_skipped] = \
+            self._configuration_settings[Setting.REPORT_SKIPPED.name]
+        if self.scope not in CfgKey.scope_choices:
+            raise ValueError(f'scope {self.scope} is not one of {CfgKey.scope_choices}')
+        if self.logging_level not in CfgKey.loglevel_choices:
+            raise ValueError(f'logging level {self.scope} is not one of {CfgKey.loglevel_choices}')
+        if not isinstance(self.skip_attributes_module, FrozenSet):
+            raise ValueError(
+                f'module attributes {type(self.skip_attributes_module)} is not FrozenSet')
+        if not isinstance(self.skip_attributes_global, FrozenSet):
+            raise ValueError(
+                f'global attributes {type(self.skip_attributes_global)} is not FrozenSet')
+        # All validation for the source information for boolean fields is done as
+        # self._configuration_settings is populated.
+        self._configuration_settings.clear()
+
+    def _get_configuration_settings(self) -> argparse.Namespace:
+        """
+        Get the profile configuration settings, cascaded from default values,
+        configuration files, and command line arguments.
+
+        Returns
+            (argparse.Namespace) containing the command line argument information
+        """
+        object.__setattr__(self, '_configuration_settings', self._default_configuration())
         self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
         cmd_line_parser: argparse.ArgumentParser = self._create_command_line_parser()
         cli_args: argparse.Namespace = cmd_line_parser.parse_args()
@@ -224,42 +361,7 @@ class ProfileConfiguration:
         self._process_configuration_files(cli_args)
         self._apply_command_line_arguments_to_configuration(cli_args)
         self._apply_settings_to_configuration()
-        self._base_module: str = cli_args.base_module_path
-        self._port_module: str = cli_args.port_module_path
-        self._immutable_configuration = MappingProxyType({
-            key: frozenset(value) if isinstance(value, set) else value
-                for key, value in self._configuration_settings.items()})
-        self._configuration_settings.clear()
-        # print(self._immutable_configuration)  # DEBUG
-
-    @property
-    def base(self) -> str:
-        """The path to the base module"""
-        return self._base_module
-
-    @property
-    def port(self) -> str:
-        """The path to the port module"""
-        return self._port_module
-
-    def __getitem__(self, key):
-        return self._immutable_configuration[key]
-    def __iter__(self):
-        return iter(self._immutable_configuration)
-    def __len__(self):
-        return len(self._immutable_configuration)
-    def keys(self):
-        """pass keys request to MappingProxy instance"""
-        return self._immutable_configuration.keys()
-    def items(self):
-        """pass items request to MappingProxy instance"""
-        return self._immutable_configuration.items()
-    def values(self):
-        """pass values request to MappingProxy instance"""
-        return self._immutable_configuration.values()
-    def get(self, key, default=None):
-        """pass get request to MappingProxy instance"""
-        return self._immutable_configuration.get(key, default)
+        return cli_args
 
     def _builtin_attribute_name_exclusions(self) -> Dict[str, FrozenSet[str]]:
         """The built in attribute names to be ignored"""
@@ -302,7 +404,7 @@ class ProfileConfiguration:
             CfgKey.docstring.settings: set(),
             CfgKey.annotation.settings: set(),
         }
-        return copy.deepcopy(def_cfg)  # make sure that 2 separate copies do not interact
+        return def_cfg
 
     def _output_default_ini(self) -> None:
         """
@@ -728,6 +830,6 @@ if __name__ == "__main__":
     app = ProfileConfiguration('TestAppConfig')
 
 # pylint:disable=line-too-long
-# cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder
+# cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder typehints
 # cSpell:ignore nargs appdata mypackage rcfile
 # cSpell:allowCompoundWords true

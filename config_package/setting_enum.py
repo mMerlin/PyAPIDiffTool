@@ -5,7 +5,7 @@
 `setting enum`
 
 An enum that defines the (names for) configuration settings used for
-comparison if module apis
+comparison of module apis
 
 """
 from enum import Enum, auto

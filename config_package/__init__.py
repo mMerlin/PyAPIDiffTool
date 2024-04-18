@@ -5,7 +5,6 @@
 public information for the config_package
 """
 
-from .profile_configuration import ProfileConfiguration, SetKey
-from .setting_enum import Setting
+from .profile_configuration import ProfileConfiguration
 
-__all__ = ["ProfileConfiguration", "SetKey", "Setting"]
+__all__ = ["ProfileConfiguration"]

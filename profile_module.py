@@ -8,7 +8,7 @@ import logging
 import types
 from typing import Callable, Iterable, Union, Tuple, Any, FrozenSet
 from app_error_framework import ApplicationLogicError
-from config_package import ProfileConfiguration, Setting
+from config_package import ProfileConfiguration
 from generic_tools import (
     SentinelTag, LoggerMixin,
     import_module,
@@ -59,7 +59,8 @@ class ProfileModule:
                 to format the string.  A logging method (IE logging.info()) will work.
         """
         self._cfg = configuration
-        self.context_data = ObjectContextData(path=module_path, element=import_module(module_path))
+        self.context_data = ObjectContextData(path=(module_path,),
+                                              element=import_module(module_path))
         self._attr_names = frozenset()
         self._ignorable_attributes = frozenset()
         self._report_skipped = skip_reporter
@@ -99,11 +100,11 @@ class ProfileModule:
         """
         populate_object_context(self.context_data)
         # Set up attribute names that are to be skipped for the current context
-        ignore = set(self._cfg.get(Setting.IGNORE_GLOBAL_ATTRIBUTES.name))
+        ignore = set(self._cfg.skip_attributes_global)
         if self.context_data.mode == PrfC.MODULE_MODE:
-            ignore.update(self._cfg.get(Setting.IGNORE_MODULE_ATTRIBUTES.name))
+            ignore.update(self._cfg.skip_attributes_module)
         if self.context_data.mode == PrfC.CLASS_MODE:
-            ignore.update(self._cfg.get(Setting.IGNORE_CLASS_ATTRIBUTES.name))
+            ignore.update(self._cfg.skip_attributes_class)
         self._ignorable_attributes = frozenset(ignore)
 
     def _get_attribute_names_for_context(self, use_all_scope: bool) -> FrozenSet[str]:
@@ -116,7 +117,7 @@ class ProfileModule:
         Returns
             (FrozenSet) names of attributes available for the current context and scope.
         """
-        attr_scope = Idx.all_scope if use_all_scope else self._cfg.get(Setting.SCOPE.name)
+        attr_scope = Idx.all_scope if use_all_scope else self._cfg.scope
         if self.context_data.mode in (PrfC.SEQUENCE_MODE, PrfC.KEY_VALUE_MODE):
             # For sequence and dict type elements only look at the contained elements
             attr_scope = Idx.published_scope
@@ -178,7 +179,8 @@ class ProfileModule:
         Returns True if the attribute is to be discarded, else False
         """
         src_file, src_module = result[Idx.info_profile][APKey.source]
-        if not ((src_file is SentinelTag(ITag.NO_SOURCE) and src_module is None) or \
+        if not (((src_file is SentinelTag(ITag.NO_SOURCE) or src_file is None) \
+                 and src_module is None) or \
                 ((src_file == self.context_data.source or src_file is SentinelTag(ITag.NO_SOURCE)) \
                  and src_module is self.context_data.module)):
             if src_file is SentinelTag(ITag.BUILTIN_EXCLUDE):

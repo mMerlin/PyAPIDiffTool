@@ -24,16 +24,17 @@ import types
 from typing import Callable, Tuple, Union, Dict
 
 from app_error_framework import RetryLimitExceeded, ApplicationFlagError
-from config_package import ProfileConfiguration, Setting, SetKey
+from config_package import ProfileConfiguration
 from profiling_utils import validate_profile_data
 #     annotation_str, default_str, report_profile_data_exceptions
 from introspection_tools import (
     AttributeProfileKey as APKey,
     ProfileConstant as PrfC,
+    Tag as ITag,
     attribute_name_compare_key,
 )
 from generic_tools import (
-    ReportHandler, LoggerMixin,
+    ReportHandler, LoggerMixin, SentinelTag,
     generate_random_alphanumeric,
     StrOrTag,
 )
@@ -145,7 +146,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self._logger.setLevel(logging.DEBUG)
         LoggerMixin.set_logger(self._logger)
         self.settings = ProfileConfiguration(self.APP_NAME, self._logger.name)
-        self._logger.setLevel(self.settings[Setting.LOGGING_LEVEL.name])
+        self._logger.setLevel(self.settings.logging_level)
         self.report: Report = Report()
         self._shared: Dict[str, Union[int, bool]] = {}
         self.base_module = self.settings.base
@@ -156,13 +157,13 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     def _configure_reporting(self) -> None:
         """Sets logging level to info when reporting, error when not reporting."""
         self.report.matched_logger.setLevel(logging.INFO
-            if self.settings[Setting.REPORT_MATCHED.name] else logging.ERROR)
+            if self.settings.report_matched else logging.ERROR)
         self.report.not_implemented_logger.setLevel(logging.INFO
-            if self.settings[Setting.REPORT_NOT_IMPLEMENTED.name] else logging.ERROR)
+            if self.settings.report_not_implemented else logging.ERROR)
         self.report.extension_logger.setLevel(logging.INFO
-            if self.settings[Setting.REPORT_EXTENSION.name] else logging.ERROR)
+            if self.settings.report_extensions else logging.ERROR)
         self.report.skipped_logger.setLevel(logging.INFO
-            if self.settings[Setting.REPORT_SKIPPED.name] else logging.ERROR)
+            if self.settings.report_skipped else logging.ERROR)
 
     def process_expand_queue(self) -> None:
         """
@@ -244,30 +245,11 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         """
         validate_profile_data(name, context.base.context_data, profile_base)
         validate_profile_data(name, context.port.context_data, profile_port)
-        rpt_target = self.report.matched_logger
         # need to watch for the need to expand both attributes
         self._shared[Key.sent_header_diff] = False
-        if profile_base[APKey.annotation] != profile_port[APKey.annotation] and \
-                SetKey.scope not in self.settings.get(Setting.IGNORE_ADDED_ANNOTATION):
-            self._send_match_diff_header(name, context)
-            rpt_target.info(f'  Annotation: Base {profile_base[APKey.annotation]};' +
-                            f' Port {profile_port[APKey.annotation]}')
-        if profile_base[APKey.data_type] != profile_port[APKey.data_type]:
-            self._send_match_diff_header(name, context)
-            rpt_target.info(f'  Type: Base {profile_base[APKey.data_type]};' +
-                            f' Port {profile_port[APKey.data_type]}')
-            # 'type' could match 'function'. A class constructor could do the same
-            # as a function: logging._logRecordFactory
-            # doing that sort of match is going to need smarter processing. Currently
-            # a class is tagged for later expansion, while function signature is
-            # handled in the current pass.
-            # ?re-tag the function to be expanded? ?logic to only expand the constructor?
-            # process the class constructor now, and match to function signature?
-            # -- the class is its constructor??
-        if profile_base[APKey.tags] != profile_port[APKey.tags]:
-            self._send_match_diff_header(name, context)
-            rpt_target.info(f'  "is" tags: Base {profile_base[APKey.tags]};' +
-                            f' Port {profile_port[APKey.tags]}')
+        self._check_match_annotation(context, name, profile_base, profile_port)
+        self._check_match_data_type(context, name, profile_base, profile_port)
+        self._check_attribute_tags(context, name, profile_base, profile_port)
         # compare profile_«»[Key.source]. Not expecting to match if part of packages
         # being compared
 
@@ -275,29 +257,228 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         port_category = profile_port[APKey.details]
         if self._handle_simple_details(name, context, base_category, port_category):
             return
-        # check if name is published in one implementation but not the other
+        self._check_published_changes(context, name)
+        if self._check_data_node(context, name, base_category):
+            return
+        if self._check_special_leaf(context, name, base_category, port_category):
+            return
+        self._handle_str_category(name, context, base_category, port_category)
+
+    def _check_match_annotation(self, context: MatchPair, name: str,
+                                profile_base: Tuple, profile_port: Tuple) -> None:
+        """
+        Reports relevant differences in (scope) annotation information
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            profile_base (Tuple): The profile information for the attribute in the base
+                implementation.
+            profile_port (Tuple): The profile information for the attribute in the ported
+                implementation.
+        """
+        if not (profile_base[APKey.annotation] == profile_port[APKey.annotation] or (
+                    profile_base[APKey.annotation] is SentinelTag(ITag.NO_ATTRIBUTE_ANNOTATION)
+                    and self.settings.annotation_ignore_scope)):
+            self._send_match_diff_header(name, context)
+            self.report.matched_logger.info('  Annotation: Base '  # pylint:disable=logging-fstring-interpolation
+                f'{profile_base[APKey.annotation]}; Port {profile_port[APKey.annotation]}')
+
+    def _check_match_data_type(self, context: MatchPair, name: str,
+                                profile_base: Tuple, profile_port: Tuple) -> None:
+        """
+        Reports differences in attribute data type information
+
+        A type of 'type' could match 'function'. A class constructor could do the same as a
+        function: logging._logRecordFactory
+        doing that sort of match is going to need smarter processing. Currently a class is
+        tagged for later expansion, while a function signature is handled in the current pass.
+        ?re-tag the function to be expanded? ?logic to only expand the constructor?
+        process the class constructor now, and match to function signature?
+        -- the class (signature) is its constructor??
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            profile_base (Tuple): The profile information for the attribute in the base
+                implementation.
+            profile_port (Tuple): The profile information for the attribute in the ported
+                implementation.
+        """
+        if profile_base[APKey.data_type] != profile_port[APKey.data_type]:
+            self._send_match_diff_header(name, context)
+            self.report.matched_logger.info(f'  Type: Base {profile_base[APKey.data_type]};' +
+                                            f' Port {profile_port[APKey.data_type]}')
+
+    def _check_attribute_tags(self, context: MatchPair, name: str,
+                                profile_base: Tuple, profile_port: Tuple) -> None:
+        """
+        Reports differences in attribute tags information
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            profile_base (Tuple): The profile information for the attribute in the base
+                implementation.
+            profile_port (Tuple): The profile information for the attribute in the ported
+                implementation.
+        """
+        if profile_base[APKey.tags] != profile_port[APKey.tags]:
+            self._send_match_diff_header(name, context)
+            self.report.matched_logger.info(  # pylint:disable=logging-fstring-interpolation
+                f'  "is" tags: Base {profile_base[APKey.tags]}; Port {profile_port[APKey.tags]}')
+            # IDEA: report added and remove tags instead of all
+
+    def _handle_simple_details(self, name: str, context: MatchPair,
+            base_category: Tuple[StrOrTag, tuple], port_category: Tuple[StrOrTag, tuple]):
+        """
+        Handle some of the simple checks for profile detail implementation differences
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+            base_category (Tuple): Attribute category profile information for the attribute in
+                the base implementation.
+            port_category (Tuple): Attribute category profile information for the attribute in
+                the ported implementation.
+        """
+        rpt_target = self.report.matched
+        if len(base_category) != len(port_category):
+            self._send_match_diff_header(name, context)
+            rpt_target(f'  Context length {len(base_category)} not = {len(port_category)}: '
+                       'cannot compare further')
+            rpt_target(f'    {base_category}')
+            rpt_target(f'    {port_category}')
+            return True
+        if len(base_category) != 2:
+            self._send_match_diff_header(name, context)
+            rpt_target(f'  Odd(unhandled) context size {len(base_category)}:')
+            rpt_target(f'    {base_category}')
+            rpt_target(f'    {port_category}')
+            return True
+        # len(handling_category) == 2
+        if base_category[APKey.context] != port_category[APKey.context]:
+            self._send_match_diff_header(name, context)
+            rpt_target(f'  Base detail key {base_category[APKey.context]} ' +
+                       f'not equal port key {port_category[APKey.context]}: '
+                       'cannot compare further')
+            rpt_target(f'    {base_category}')
+            rpt_target(f'    {port_category}')
+            return True
+        if base_category[APKey.context] == PrfC.DATA_LEAF:
+            if base_category[APKey.detail] == port_category[APKey.detail] or \
+                    self._is_ignored_docstring(name, context):
+                if not self._shared[Key.sent_header_diff]:  # Exact match
+                    if self.settings.report_exact:
+                        rpt_target(f'"{name}" No Difference: ' +
+                            f'{context.base.context_data.path}¦{context.port.context_data.path}')
+                return True
+            self._send_match_diff_header(name, context)
+            rpt_target('  Literal value changed (possibly truncated):')
+            # future: generic function to more smartly truncate content
+            #  append … if truncated
+            #  trim and collapse whitespace
+            #  specify maximum length «account for appended ellipse»
+            #  smarter: start with ellipse and make sure to show segment that is different
+            rpt_target(f'    base content = {base_category[APKey.detail]:.50}')
+            rpt_target(f'    port content = {port_category[APKey.detail]:.50}')
+            return True
+        return False
+
+    def _is_ignored_docstring(self, name: str, context: MatchPair) -> bool:
+        """
+        check if the attribute is a docstring that is to be ignored (for differences)
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+        """
+        return (
+            name == '__doc__' and
+            # context.base.context_data.mode == PrfC:MODULE_MODE and
+            (isinstance(context.base.context_data.element, types.ModuleType) and
+             self.settings.docstring_ignore_module) or
+            # context.base.context_data.mode == PrfC:CLASS_MODE and
+            ((isinstance(context.base.context_data.element, type) or
+              repr(type(context.base.context_data.element)).startswith('<class ') or
+              context.base.context_data.mode == PrfC.KEY_VALUE_MODE) and
+             self.settings.docstring_ignore_class) or
+            (isinstance(context.base.context_data.element, types.FunctionType) and
+             self.settings.docstring_ignore_method)
+        )
+
+    def _check_published_changes(self, context: MatchPair, name: str) -> None:
+        """
+        Reports attribute published status differences
+
+        Checks if name is published in one implementation but not the other
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            profile_base (Tuple): The profile information for the attribute in the base
+                implementation.
+            profile_port (Tuple): The profile information for the attribute in the ported
+                implementation.
+        """
         if name in context.base.context_data.published and \
                 name not in context.port.context_data.published:
             self._send_match_diff_header(name, context)
-            rpt_target.info('  published in base implementation, but not in the port')
+            self.report.matched_logger.info(
+                '  published in base implementation, but not in the port')
         if name not in context.base.context_data.published and \
                 name in context.port.context_data.published:
             self._send_match_diff_header(name, context)
-            rpt_target.info('  published in port implementation, but not in the base')
+            self.report.matched_logger.info(
+                '  published in port implementation, but not in the base')
+
+    def _check_data_node(self, context: MatchPair, name: str, base_category: Tuple) -> bool:
+        """
+        Reports pending expansion of matching data nodes.
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            base_category (Tuple): The base profile attribute details
+
+        Returns
+            True when a data node has been found, False otherwise.
+        """
         if base_category[APKey.context] == PrfC.DATA_NODE:
             self._queue_attribute_expansion(name, context)
             if not self._shared[Key.sent_header_diff]:  # Exact match (so far)
-                if self.settings.get(Setting.REPORT_EXACT_MATCH):
-                    rpt_target.info(f'"{name}" Expand matched node: ' +
+                if self.settings.report_exact:
+                    self.report.matched_logger.info(f'"{name}" Expand matched node: ' +
                         f'{context.base.context_data.path}¦{context.port.context_data.path}')
-            return
+            return True
+        return False
+
+    def _check_special_leaf(self, context: MatchPair, name: str,
+                         base_category: Tuple, port_category: Tuple) -> bool:
+        """
+        Reports leaf type match details
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            name (str): The name of the matched attribute.
+            base_category (Tuple): The base profile attribute details
+            port_category (Tuple): The port profile attribute details
+
+        Returns
+            True when a leaf type has been found, False otherwise.
+        """
         if base_category[APKey.context] in (
                 PrfC.A_CLASS, PrfC.DATA_LEAF, PrfC.unhandled_value):
-            self._send_match_diff_header(name, context)
-            rpt_target.info(f'  compare context: Base {base_category};' +
-                            f' Port {port_category}')
-            return
-        self._handle_str_category(name, context, base_category, port_category)
+            if base_category[APKey.detail] != port_category[APKey.detail]:
+                self._send_match_diff_header(name, context)
+                self.report.matched_logger.info(f'  compare context: Base {base_category};' +
+                                                f' Port {port_category}')
+            else:
+                if self.settings.report_exact:
+                    self.report.matched_logger.info(
+                        f'  Details Matched: {base_category[APKey.detail]}')
+            return True
+        return False
 
     def _send_match_diff_header(self, name: str, context: MatchPair) -> None:
         """
@@ -316,9 +497,6 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                                    profile: AttributeProfile) -> None:
         pass  # Stub
     def _report_match_details(self) -> None:
-        pass  # Stub
-    def _handle_simple_details(self, name: str, context: MatchPair,
-            base_category: Tuple[StrOrTag, tuple], port_category: Tuple[StrOrTag, tuple]):
         pass  # Stub
     def _handle_str_category(self, name: str, context: MatchPair, base_category: Tuple,
                              port_category: Tuple) -> None:
@@ -404,5 +582,5 @@ if __name__ == "__main__":
     app.process_expand_queue()
 
 # cSpell:words pathlib backslashreplace levelname
-# cSpell:ignore
+# cSpell:ignore fstring
 # cSpell:allowCompoundWords true
