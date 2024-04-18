@@ -7,7 +7,6 @@
 
 Load configuration (ini) file content and command line argument data
 creating validated configuration settings.
-
 """
 
 import argparse
@@ -20,6 +19,7 @@ import logging
 from pathlib import Path
 import sys
 from typing import Union, Dict, Any, FrozenSet, Set
+
 from generic_tools import (
     SentinelTag, RunAndExitAction, IniStr, IniStructureType,
     add_tri_state_argument, validate_module_path, make_all_or_keys_validator,

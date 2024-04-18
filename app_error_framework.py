@@ -23,3 +23,8 @@ class RetryLimitExceeded(ApplicationRootError):
     """Too many retries for operation.
     Specify the context in the message.
     """
+
+class ApplicationDataError(ApplicationRootError):
+    """Unexpected data for processing context.
+    Check if the case is supposed to be handled.
+    """
