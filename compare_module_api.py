@@ -21,11 +21,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue
 import types
-from typing import Callable, Tuple, Union, Dict
+from typing import Callable, Tuple, FrozenSet, Union, Dict
 
-from app_error_framework import RetryLimitExceeded, ApplicationFlagError, ApplicationDataError
+from app_error_framework import (
+    RetryLimitExceeded, ApplicationFlagError, ApplicationDataError, ApplicationLogicError,
+)
 from config_package import ProfileConfiguration
-from profiling_utils import validate_profile_data
+from profiling_utils import validate_profile_data, annotation_str, default_str
 from introspection_tools import (
     AttributeProfileKey as APKey,
     InspectIs as Is,
@@ -36,7 +38,7 @@ from introspection_tools import (
 )
 from generic_tools import (
     ReportHandler, LoggerMixin, SentinelTag,
-    generate_random_alphanumeric,
+    generate_random_alphanumeric, tuple_2_generator,
     StrOrTag,
 )
 from profile_module import ProfileModule
@@ -60,14 +62,35 @@ AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple
                          Tuple[tuple, StrOrTag]]
 
 @dataclass(frozen=True)
+class ContextSet:
+    """
+    Constants for individual and groups of contexts to be matched
+    """
+    routine: FrozenSet[str] = frozenset({Is.ROUTINE})
+    data_node: FrozenSet[str] = frozenset({PrfC.DATA_NODE})
+    data_leaf: FrozenSet[str] = frozenset({PrfC.DATA_LEAF})
+    other_leaf: FrozenSet[str] = frozenset({PrfC.A_CLASS, PrfC.unhandled_value})
+    descriptor: FrozenSet[str] = frozenset({PrfC.A_CLASS, Is.DATADESCRIPTOR})
+    dunder: FrozenSet[str] = frozenset({PrfC.DUNDER})
+
+@dataclass(frozen=True)
 class Key:
     """
     Constants for lookup indexes and keys, to avoid possible typos in strings used to
     reference them.
     """
+    # pylint:disable=too-many-instance-attributes
     compare_name: int = 1
     """index to actual attribute name in (sorted) comparison key"""
     sent_header_diff: str = 'diff header sent'
+    sent_header_sig: str = 'signature header sent'
+    index_positional: str = 'positional index'
+    index_keyword: str = 'keyword index'
+    cur_param_type: str = 'parameter type'
+    match_positional: str = 'POSITIONAL'
+    match_keyword: str = 'KEYWORD'
+    report_positional: str = 'positional'
+    report_keyword: str = 'keyword'
 
 @dataclass()
 class MatchPair:
@@ -142,6 +165,9 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     With the sort order used, private attribute names sort last
     """
+    # END_DETAIL = ParameterDetail(name='z', kind='KEYWORD', annotation='str', default=None)
+    END_DETAIL = ParameterDetail(name='z', kind='undefined', annotation='str', default=None)
+    """EOF marker for processing ParameterDetail instances"""
 
     def __init__(self):
         self._logger = _initialize_exception_logging(self.APP_NAME + ".log")
@@ -232,7 +258,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
             port_element=getattr(context.port.context_data.element, name, None),
         ))
 
-    def _handle_matched_attribute(self, name: str, context: MatchPair,  # pylint:disable=too-many-return-statements
+    def _handle_matched_attribute(self, name: str, context: MatchPair,
                                  profile_base: Tuple, profile_port: Tuple) -> None:
         """
         Handles attributes that exist in both base and port implementations.
@@ -257,21 +283,18 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
         base_category = profile_base[APKey.details]
         port_category = profile_port[APKey.details]
-        if self._check_category_discrepancy(name, context, base_category, port_category):
-            return
-        if self._check_different_category_key(name, context, base_category, port_category):
-            return
-        if self._check_data_leaf(name, context, base_category, port_category):
+        if self._check_category_discrepancy(name, context, base_category, port_category) \
+                or self._check_different_category_key(name, context, base_category, port_category) \
+                or self._check_data_leaf(name, context, base_category, port_category):
             return
         self._check_published_changes(name, context)
-        if self._check_data_node(name, context, base_category):
+        if self._check_data_node(name, context, base_category) \
+                or self._check_special_leaf(name, context, base_category, port_category) \
+                or self._check_expandable(name, context, base_category, port_category) \
+                or self._check_expand_cutoff(name, context, base_category, port_category):
             return
-        if self._check_special_leaf(name, context, base_category, port_category):
-            return
-        if self._check_expandable(name, context, base_category, port_category):
-            return
-        if self._check_expand_cutoff(name, context, base_category, port_category):
-            return
+        self._check_only_routine(name, context, base_category, port_category)
+        self._check_routine_data_structure(name, context, base_category, port_category)
         self._handle_matched_routine(name, context, base_category, port_category)
 
     def _check_match_annotation(self, name: str, context: MatchPair,
@@ -404,7 +427,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
             port_category (Tuple): Attribute category profile information for the attribute in
                 the ported implementation.
         """
-        if base_category[APKey.context] == PrfC.DATA_LEAF:
+        if base_category[APKey.context] in ContextSet.data_leaf:
             if base_category[APKey.detail] == port_category[APKey.detail]:
                 if not self._shared[Key.sent_header_diff]:  # Exact match
                     if self.settings.report_exact:
@@ -425,7 +448,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     def _is_ignored_docstring(self, name: str, context: MatchPair) -> bool:
         """
-        check if the attribute is a docstring that is to be ignored (for differences)
+        check if the attribute is a docstring that is to be ignored (for differences).
 
         Args:
             name (str): The name of the matched attribute.
@@ -447,7 +470,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     def _check_published_changes(self, name: str, context: MatchPair) -> None:
         """
-        Reports attribute published status differences
+        Reports attribute published status differences.
 
         Checks if name is published in one implementation but not the other
 
@@ -477,12 +500,12 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         Args:
             context (MatchPair): The context data for the base and port implementations.
             name (str): The name of the matched attribute.
-            base_category (Tuple): The base profile attribute details
+            base_category (Tuple): The base profile attribute details.
 
         Returns
             True when a data node has been found, False otherwise.
         """
-        if base_category[APKey.context] == PrfC.DATA_NODE:
+        if base_category[APKey.context] in ContextSet.data_node:
             self._queue_attribute_expansion(name, context)
             if not self._shared[Key.sent_header_diff]:  # Exact match (so far)
                 if self.settings.report_exact:
@@ -494,19 +517,18 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     def _check_special_leaf(self, name: str, context: MatchPair,
                          base_category: Tuple, port_category: Tuple) -> bool:
         """
-        Reports leaf type match details
+        Reports leaf type match details.
 
         Args:
             context (MatchPair): The context data for the base and port implementations.
             name (str): The name of the matched attribute.
-            base_category (Tuple): The base profile attribute details
-            port_category (Tuple): The port profile attribute details
+            base_category (Tuple): The base profile attribute details.
+            port_category (Tuple): The port profile attribute details.
 
         Returns
             True when a leaf type has been found, False otherwise.
         """
-        if base_category[APKey.context] in (
-                PrfC.A_CLASS, PrfC.unhandled_value):
+        if base_category[APKey.context] in ContextSet.other_leaf:
             if base_category[APKey.detail] == port_category[APKey.detail]:
                 if self.settings.report_exact:
                     self.report.matched(f'"{name}" category {base_category[APKey.context]} ' +
@@ -521,23 +543,32 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     def _check_expandable(self, name: str, context: MatchPair, base_category: Tuple,
                              port_category: Tuple) -> bool:
         """
-        Adds expandable attribute to the queue
+        Adds expandable attribute to the queue.
 
         Args:
             context (MatchPair): The context data for the base and port implementations.
             name (str): The name of the matched attribute.
-            base_category (Tuple): The base profile attribute details
-            port_category (Tuple): The port profile attribute details
+            base_category (Tuple): The base profile attribute details.
+            port_category (Tuple): The port profile attribute details.
 
         Returns
             True when an expandable attribute has been found, False otherwise.
         """
         if base_category[APKey.detail] is SentinelTag(PrfC.expandable):
             if port_category[APKey.detail] is not SentinelTag(PrfC.expandable):
+                self._logger(f'"{name}" ' +
+                    f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                    f'category {base_category[APKey.context]}, ' +
+                    f'base is {repr(base_category[APKey.detail])}, ' +
+                    f'but port is {repr(port_category[APKey.detail])}')
                 raise ApplicationDataError(
                     f'"{name}" base {base_category[APKey.context]} is expandable, but ' +
                     f'port is {repr(port_category[APKey.detail])}')
-            if base_category[APKey.context] not in (PrfC.A_CLASS, Is.DATADESCRIPTOR):
+            if base_category[APKey.context] not in ContextSet.descriptor:
+                self._logger(f'"{name}" ' +
+                    f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                    f' category {base_category[APKey.context]} ' +
+                    f'not in {repr(set(ContextSet.descriptor))}')
                 raise ApplicationDataError(f'Unhandled expand for {base_category[APKey.context]} ' +
                                            f'category for "{name}" attribute.')
             self._queue_attribute_expansion(name, context)
@@ -552,27 +583,252 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     def _check_expand_cutoff(self, name: str, context: MatchPair, base_category: Tuple,
                              port_category: Tuple) -> bool:
         """
-        Reports nested expansion cutoff tag
+        Reports nested expansion cutoff tag.
 
         Args:
             context (MatchPair): The context data for the base and port implementations.
             name (str): The name of the matched attribute.
-            base_category (Tuple): The base profile attribute details
-            port_category (Tuple): The port profile attribute details
+            base_category (Tuple): The base profile attribute details.
+            port_category (Tuple): The port profile attribute details.
 
         Returns
             True when an expandable attribute has been found, False otherwise.
         """
         if base_category[APKey.detail] is SentinelTag(PrfC.cutoff):
             if port_category[APKey.detail] is not SentinelTag(PrfC.cutoff):
+                self._logger(f'"{name}" ' +
+                    f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                    f' category {base_category[APKey.context]} with base detail ' +
+                    f'{repr(base_category[APKey.detail])} but port detail' +
+                    f'{repr(port_category[APKey.detail])} but port detail')
                 raise ApplicationDataError(
                     f'"{name}" is cutoff for {context.base.context_data.path} ' +
                     f'but not for {context.port.context_data.path}')
-            if base_category[APKey.context] not in (PrfC.DUNDER,):
+            if base_category[APKey.context] not in ContextSet.dunder:
+                self._logger(f'"{name}" ' +
+                    f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                    f' category {base_category[APKey.context]} is not in ' +
+                    f'{repr(set(ContextSet.dunder))} for {repr(base_category[APKey.detail])}')
                 raise ApplicationDataError('Self tag context '
                     f'"{base_category[APKey.context]}" found for "{name}" attribute.')
             return True
         return False
+
+    def _check_only_routine(self, name: str, context: MatchPair,
+                               base_category: MethodSignatureDetail,
+                               port_category: MethodSignatureDetail) -> None:
+        """
+        Checks that the category information is for a function.
+
+        Everything else should already have been processed.
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+            base_category (tuple): the base implementation function signature information.
+            port_category (tuple): the port implementation function signature information.
+                MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
+
+        Raises:
+            ApplicationDataError if either base or port context key is not for a function.
+        """
+        if base_category[APKey.context] not in ContextSet.routine:
+            self._logger.error(
+                f'"{name}" <{context.base.context_data.path}> ' +
+                f'had unhandled detail category {base_category[APKey.context]}.\n' +
+                f'  expecting {repr(set(ContextSet.routine))}')
+            raise ApplicationDataError(f'unhandled "{base_category[APKey.context]}" context for ' +
+                f'"{name}"¦{context.base.context_data.path}¦{context.port.context_data.path}.\n' +
+                f'  Base detail: {base_category[APKey.detail]}\n' +
+                f'  Port detail: {port_category[APKey.detail]}')
+        if port_category[APKey.context] not in ContextSet.routine:
+            self._logger.error(
+                f'"{name}" <{context.port.context_data.path}> ' +
+                f'had unhandled detail category {base_category[APKey.context]}.\n' +
+                f'  expecting {repr(set(ContextSet.routine))}')
+            raise ApplicationDataError(f'unhandled "{base_category[APKey.context]}" context for ' +
+                f'"{name}"¦{context.base.context_data.path}¦{context.port.context_data.path}.\n' +
+                f'  Base detail: {base_category[APKey.detail]}\n' +
+                f'  Port detail: {port_category[APKey.detail]}')
+
+    def _check_routine_data_structure(self, name: str, context: MatchPair,
+                               base_category: MethodSignatureDetail,
+                               port_category: MethodSignatureDetail) -> bool:
+        """
+        Checks that the function profile detail data is in the expected structure.
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+            base_category (tuple): the base implementation function signature information.
+            port_category (tuple): the port implementation function signature information.
+                MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
+
+        Raises:
+            ApplicationDataError if the profile detail data structure is not for a function.
+        """
+
+        if not (isinstance(base_category[APKey.detail], tuple) and
+                isinstance(port_category[APKey.detail], tuple)):
+            self._logger.error(
+                f'"{name}" <{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                'routine category expected detail types (tuple,tuple): found (' +
+                f'{type(base_category[APKey.detail]).__name__},' +
+                f'{type(port_category[APKey.detail]).__name__})')
+            raise ApplicationDataError(
+                f'"{name}" {base_category[APKey.context]} detail types are ' +
+                f'{type(base_category[APKey.detail]).__name__},' +
+                f'{type(port_category[APKey.detail]).__name__} instead of tuple,tuple')
+        if not (len(base_category[APKey.detail]) == APKey.sig_elements and
+                len(port_category[APKey.detail]) == APKey.sig_elements):
+            self._logger(
+                f'"{name}" <{context.base.context_data.path}¦{context.port.context_data.path}> ' +
+                f'routine category detail items counts are ({len(base_category[APKey.detail])},' +
+                f'{len(port_category[APKey.detail])}), ' +
+                f'not {APKey.sig_elements},{APKey.sig_elements}),')
+            self._logger(f'  Base details: {base_category[APKey.detail]}')
+            self._logger(f'  Port details: {port_category[APKey.detail]}')
+            raise ApplicationDataError(f'"{name}" {base_category[APKey.context]} detail tuples ' +
+                f'contain {len(base_category[APKey.detail])},{len(port_category[APKey.detail])} ' +
+                f'elements: expecting {APKey.sig_elements},{APKey.sig_elements}')
+
+    def _handle_matched_routine(self, name: str, context: MatchPair,
+                               base_category: MethodSignatureDetail,
+                               port_category: MethodSignatureDetail) -> bool:
+        """
+        Handle reporting (miss) matches of signatures for matched function elements
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+            base_category (tuple): the base implementation function signature information
+            port_category (tuple): the port implementation function signature information
+                MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
+        """
+        base_sig = base_category[APKey.detail]
+        port_sig = port_category[APKey.detail]
+        base_iter = tuple_2_generator(base_sig[APKey.sig_parameters])
+        port_iter = tuple_2_generator(port_sig[APKey.sig_parameters])
+        base_det: ParameterDetail = next(base_iter, self.END_DETAIL)
+        port_det: ParameterDetail = next(port_iter, self.END_DETAIL)
+        self._shared[Key.sent_header_sig] = False
+        self._shared[Key.index_positional] = -1
+        self._shared[Key.index_keyword] = -1
+        match_kind = Key.match_positional
+        report_kind = Key.report_positional
+        while not (base_det == self.END_DETAIL and port_det == self.END_DETAIL):
+            self._shared[Key.index_positional] += 1
+            if match_kind in base_det.kind and match_kind in port_det.kind:
+                self._handle_matched_parameters(name, context, report_kind, base_det, port_det)
+                base_det = next(base_iter, self.END_DETAIL)
+                port_det = next(port_iter, self.END_DETAIL)
+                continue
+            if match_kind in base_det.kind:
+                self._send_match_sig_header(name, context)
+                self.report.matched(f'{self._param_prefix(report_kind)} ' +
+                                 'in base but not port: {base_det}')
+                base_det = next(base_iter, self.END_DETAIL)
+                continue
+            if match_kind in port_det.kind:
+                self._send_match_sig_header(name, context)
+                self.report.matched(f'{self._param_prefix(report_kind)} ' +
+                                 f'in port but not base: {port_det}')
+                port_det = next(port_iter, self.END_DETAIL)
+                continue
+            if match_kind == Key.match_positional:
+                match_kind = Key.match_keyword
+                report_kind = Key.report_keyword
+                # handle keyword (non-positional) parameters
+                # potentially these could be out of order matches, so the logic here could be made
+                # smarter: sort remaining ParameterDetail entries in both sets
+                # 'pre' split, so the non-positional entries are handled separately, after the
+                # positional.
+
+                # Currently *assumes* that keyword entries are in the same order for base and port.
+                # If they are not, mismatches will be reported.
+                continue
+            # Should never get here: data or logic problem.
+            self._report_unrecognized_parameter_kind(
+                name, context.base.context_data.path, base_det, base_category)
+            self._report_unrecognized_parameter_kind(
+                name, context.port.context_data.path, port_det, port_category)
+            raise ApplicationLogicError(f'Neither base or port trapped as unknown for {name}:\n'
+                f'  {context.base.context_data.path}¦{base_det}\n' +
+                f'  {context.port.context_data.path}¦{port_det}')
+
+        if base_sig[APKey.sig_return] != port_sig[APKey.sig_return] and \
+                base_sig[APKey.sig_return] is SentinelTag(ITag.NO_RETURN_ANNOTATION) and \
+                not self.settings.annotation_ignore_return:
+            self._send_match_sig_header(name, context)
+            self.report.matched('    routine return annotation: base '
+                f'{_fmt_return_annotation(base_sig)}; port {_fmt_return_annotation(port_sig)}')
+        if base_sig[APKey.sig_doc] != port_sig[APKey.sig_doc] and \
+                not self.settings.docstring_ignore_method:
+            self._send_match_sig_header(name, context)
+            self.report.matched(f'    routine docstring: base ¦{base_sig[APKey.sig_doc]}¦; ' +
+                             f'port ¦{port_sig[APKey.sig_doc]}¦')
+
+    def _handle_matched_parameters(self, name: str, context: MatchPair, param_type: str, # pylint:disable=too-many-arguments
+            base_det: ParameterDetail, port_det: ParameterDetail) -> None:
+        """
+        Handle reporting miss-matches between base and port positional parameter details
+
+        Args:
+            name (str): The name of the matched attribute.
+            context (MatchPair): The context data for the base and port implementations.
+            param_type (str): positional versus keyword parameter reporting
+            base_det (ParameterDetail): the base implementation parameter signature information
+            port_det (ParameterDetail): the port implementation parameter signature information
+        """
+        if base_det.name != port_det.name:
+            self._send_match_sig_header(name, context)
+            self.report.matched(f'{self._param_prefix(param_type)} name: ' +
+                f'base "{base_det.name}"; port "{port_det.name}"')
+        if base_det.kind != port_det.kind:
+            self._send_match_sig_header(name, context)
+            self.report.matched(f'{self._param_prefix(param_type)} kind: ' +
+                f'base "{base_det.kind}"; port "{port_det.kind}"')
+        if base_det.annotation != port_det.annotation and \
+                base_det.annotation is SentinelTag(ITag.NO_PARAMETER_ANNOTATION) and \
+                not self.settings.annotation_ignore_parameter:
+            self._send_match_sig_header(name, context)
+            # pylint:disable=line-too-long
+            self.report.matched(f'{self._param_prefix(param_type)} annotation: ' +
+                f'base {annotation_str(base_det.annotation, SentinelTag(ITag.NO_PARAMETER_ANNOTATION))}; ' +
+                f'port {annotation_str(port_det.annotation, SentinelTag(ITag.NO_PARAMETER_ANNOTATION))}')
+        if base_det.default != port_det.default:
+            self._send_match_sig_header(name, context)
+            self.report.matched(f'{self._param_prefix(param_type)} default: ' +
+                f'base {default_str(base_det.default)}; ' +
+                f'port {default_str(port_det.default)}')
+
+    def _report_unrecognized_parameter_kind(self, name: str, attribute_path: Tuple[str],
+            parm_det: ParameterDetail, param_category: MethodSignatureDetail) -> None:
+        """
+        Log and raise exception for a parameter that was not handled as either
+        positional or keyword.
+
+        Args:
+            name (str): The name of the matched attribute.
+            attribute_path (Tuple):
+            parm_det (ParameterDetail): information about a single parameter
+            param_category (tuple): the implementation function signature information.
+                MethodSignatureDetail is Tuple[str, Tuple[Tuple[ParameterDetail, ...], StrOrTag]]
+
+        Raises:
+            ApplicationDataError when the parameter is not the end marker.
+        """
+        if parm_det != self.END_DETAIL:
+            self._logger(
+                f'"{name}" <{attribute_path}> routine parameter ' +
+                f'{self._shared[Key.index_positional]} kind is {repr(parm_det.kind)},' +
+                'neither positional or keyword')
+            raise ApplicationDataError(f'"{name}" {param_category[APKey.context]} signature ' +
+                f'contains unrecognized kind of parameter: {repr(parm_det.kind)}')
+
+    def _param_prefix(self, param_type: str) -> str:
+        """formatted indexed positional parameter information prefix"""
+        return f'    {param_type} parameter {self._shared[Key.index_positional]}'
 
     def _send_match_diff_header(self, name: str, context: MatchPair) -> None:
         """
@@ -587,10 +843,19 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                                 f'{context.port.context_data.path}')
             self._shared[Key.sent_header_diff] = True
 
-    def _handle_matched_routine(self, name: str, context: MatchPair,
-                               base_category: MethodSignatureDetail,
-                               port_category: MethodSignatureDetail) -> None:
-        pass  # Stub
+    def _send_match_sig_header(self, name: str, context: MatchPair) -> None:
+        """
+        Send a (method signature block) header line, if it has not yet been sent
+
+        Args:
+            name (str) the name of the attribute being reported
+            context (MatchPair): The context data for the base and port implementations.
+        """
+        self._send_match_diff_header(name, context)
+        if not self._shared[Key.sent_header_sig]:
+            self.report.matched('  Method Parameters:')
+            self._shared[Key.sent_header_sig] = True
+
     def _handle_unmatched_attribute(self, context: MatchPair, base_or_port: str, name: str,
                                    profile: AttributeProfile) -> None:
         pass  # Stub
@@ -671,6 +936,15 @@ def get_unique_logger(name_prefix: str, *, retries: int = 3) -> logging.Logger:
         if retries <= 0:
             raise RetryLimitExceeded(
                 f'new logger "{logger_name}" has {len(new_logger.handlers)} handlers: should be 0')
+
+def _fmt_return_annotation(sig_data: tuple) -> str:
+    """
+    get return type annotation from routine signature details
+
+    Args:
+        sig_data (tuple): signature profile information for a routine
+    """
+    return annotation_str(sig_data[APKey.sig_return], SentinelTag(ITag.NO_RETURN_ANNOTATION))
 
 if __name__ == "__main__":
     app = CompareModuleAPI()

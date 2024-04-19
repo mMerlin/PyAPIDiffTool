@@ -487,7 +487,7 @@ class ProfilePrototype:
             name (str): the name of the attribute being profiled
             result (tuple): collected profile information for the attribute
 
-        Returns True is the attribute is to be discarded, else False
+        Returns True if the attribute is to be discarded, else False
         """
         src_file, src_module = result[PrToKey.INFO_PROFILE][APKey.source]
         # if not ((src_file is SentinelTag(Tag.NO_SOURCE) and src_module is None) or \

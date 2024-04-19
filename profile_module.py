@@ -64,6 +64,7 @@ class ProfileModule:
         self._attr_names = frozenset()
         self._ignorable_attributes = frozenset()
         self._report_skipped = skip_reporter
+        self._dont_filter_source_patterns: FrozenSet = None
 
     def update_context(self, path: Tuple[str], element: object) -> None:
         """
@@ -99,6 +100,12 @@ class ProfileModule:
         attribute names and a set of ignorable attribute names.
         """
         populate_object_context(self.context_data)
+        # Set up source file patterns that are not to be filtered (by source)
+        self._dont_filter_source_patterns: FrozenSet = frozenset({
+            (SentinelTag(ITag.NO_SOURCE), None),
+            (self.context_data.source, self.context_data.module),
+            (SentinelTag(ITag.NO_SOURCE), self.context_data.module),
+        })
         # Set up attribute names that are to be skipped for the current context
         ignore = set(self._cfg.skip_attributes_global)
         if self.context_data.mode == PrfC.MODULE_MODE:
@@ -148,6 +155,9 @@ class ProfileModule:
 
         raw_profile = get_attribute_info(self.context_data, name)
         if raw_profile[Idx.info_name] != name:
+            LoggerMixin.get_logger().error(f'"{name}" <{self.context_data.path}> ' +
+                'get_attribute_info should return the requested attibute: Found '
+                f'{repr(raw_profile[Idx.info_name])} which is not {repr(name)}')
             raise ApplicationLogicError('get_attribute_info should return the requested attribute '
                                         f'name: "{raw_profile[Idx.info_name]}" not equal "{name}"')
         attr_profile = (attribute_name_compare_key(name),) + raw_profile[1:]
@@ -161,7 +171,7 @@ class ProfileModule:
         if self._filter_by_source(name, attr_profile):
             return SentinelTag(Tag.dont_yield)
 
-        key = attr_profile[Idx.info_profile][APKey.details][APKey.context]
+        key = attr_profile[Idx.info_profile][APKey.details][APKey.detail]
         if key in [SentinelTag(ITag.SYS_EXCLUDE), SentinelTag(ITag.BUILTIN_EXCLUDE)]:
             self._report_iterate_skip(attr_profile)
             return SentinelTag(Tag.dont_yield)
@@ -178,26 +188,30 @@ class ProfileModule:
 
         Returns True if the attribute is to be discarded, else False
         """
+        if result[Idx.info_profile][APKey.source] in self._dont_filter_source_patterns:
+            return False
+
         src_file, src_module = result[Idx.info_profile][APKey.source]
-        if not (((src_file is SentinelTag(ITag.NO_SOURCE) or src_file is None) \
-                 and src_module is None) or \
-                ((src_file == self.context_data.source or src_file is SentinelTag(ITag.NO_SOURCE)) \
-                 and src_module is self.context_data.module)):
-            if src_file is SentinelTag(ITag.BUILTIN_EXCLUDE):
-                self._report_iterate_skip(result)
-                return True
-            if not isinstance(src_module, types.ModuleType):
-                raise ApplicationLogicError('source module should be a ModuleType: Found '
-                    f'{type(src_module).__name__} for {name} in {self.context_data.path}: {result}')
-            if not(src_file is SentinelTag(ITag.NO_SOURCE) or
-                    src_file is SentinelTag(ITag.GET_SOURCE_FAILURE) or
-                    isinstance(src_file, str)):
-                raise ApplicationLogicError(
-                    'source file should be a string or specific SentinelTag: Found '
-                    f'{type(src_file).__name__} for {name} in {self.context_data.path}: {result}')
+        if src_file is SentinelTag(ITag.BUILTIN_EXCLUDE):
             self._report_iterate_skip(result)
             return True
-        return False
+        if not isinstance(src_module, types.ModuleType):
+            LoggerMixin.get_logger().error(f'"{name}" <{self.context_data.path}> ' +
+                'source module should be a ModuleType: Found '
+                f'{type(src_module).__name__} with source file {repr(src_file)}')
+            raise ApplicationLogicError('source module should be a ModuleType: Found '
+                f'{type(src_module).__name__} for {name} in {self.context_data.path}: {result}')
+        if not(src_file is SentinelTag(ITag.NO_SOURCE) or
+                src_file is SentinelTag(ITag.GET_SOURCE_FAILURE) or
+                isinstance(src_file, str)):
+            LoggerMixin.get_logger().error(f'"{name}" <{self.context_data.path}> ' +
+                'source file should be a string or specific SentinelTag: Found '
+                f'{type(src_file).__name__} with source module {repr(src_module)}')
+            raise ApplicationLogicError(
+                'source file should be a string or specific SentinelTag: Found '
+                f'{type(src_file).__name__} for {name} in {self.context_data.path}: {result}')
+        self._report_iterate_skip(result)
+        return True
 
     def _report_iterate_skip(self, result: tuple) -> None:
         """
