@@ -20,18 +20,23 @@ from generic_tools import SentinelTag, LoggerMixin, StrOrTag
 ParameterDetail = namedtuple('ParameterDetail', ['name', 'kind', 'annotation', 'default'])
 """Details collected about a function or method parameter"""
 
+MethodSignature = Tuple[Tuple[ParameterDetail], StrOrTag, StrOrTag]
+LeafDataType = Union[types.NoneType, str, int, float]
+
+RoutineDetail = Tuple[str, MethodSignature]
+LeafDetail = Tuple[str, LeafDataType]
+AttributeDetail = Tuple[str, Union[Tuple, LeafDataType, SentinelTag]]
 AttributeProfile = Tuple[StrOrTag,
                          str,
                          Tuple[StrOrTag, types.ModuleType],
                          Tuple[str, ...],
-                         Tuple[str, Union[StrOrTag, tuple, int, float]]]
+                         AttributeDetail]
 """
     parent context typehint annotation
     type
     (source file path, source module)
     ("is" keywords)
-    (detail, …)
-        «hpd need to expand»
+    (profile details)
 """
 
 GLOBAL_IS_FUNCTIONS: Tuple[Tuple[str, Callable[[Any], bool]]] = tuple(
@@ -130,7 +135,7 @@ class ProfileConstant:
     instance_prefix_fmt = "<class '{}."
     """Match for detection of a class instance"""
     DUNDER: str = 'dunder class attribute'
-    A_CLASS: str = 'a class'
+    A_CLASS: str = 'class'
     namedtuple: str = 'namedtuple'
     """A namedtuple. Only it's fields will be included in profiling information"""
     DATA_LEAF: str = 'Data:Leaf'

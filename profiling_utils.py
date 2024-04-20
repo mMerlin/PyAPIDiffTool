@@ -14,10 +14,11 @@ from typing import Hashable, Callable
 
 from generic_tools import SentinelTag, LoggerMixin, StrOrTag
 from introspection_tools import (
-    ObjectContextData, ParameterDetail,
+    ParameterDetail,
     Tag as ITag, AttributeProfileKey as Key, ProfileConstant as PrfC, InspectIs as Is,
-    AttributeProfile,
+    AttributeProfile, LeafDataType
 )
+from profile_module import ProfileModule
 from app_error_framework import ApplicationLogicError
 
 def annotation_str(annotation: StrOrTag, sentinel: SentinelTag) -> str:
@@ -51,14 +52,14 @@ def default_str(default: Hashable) -> str:
         else '"None"' if default is None else \
         f':{type(default).__name__} "{default}"'
 
-def validate_profile_data(name: str, implementation: ObjectContextData,  # pylint:disable=too-many-branches
+def validate_profile_data(name: str, implementation: ProfileModule,  # pylint:disable=too-many-branches
                           profile: AttributeProfile) -> None:
     """
     Do some sanity checks on the prototype profile information structure.
 
     Args:
         name (str): The name of an attribute.
-        implementation (ObjectContextData): context information for the attribute and profile.
+        implementation (ProfileModule): context information for the attribute and profile.
         profile (AttributeProfile): The profile information for the implemented attribute.
     """
     assert isinstance(name, str), \
@@ -76,7 +77,7 @@ def validate_profile_data(name: str, implementation: ObjectContextData,  # pylin
         f'{type(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
     assert len(profile[Key.source]) == Key.source_elements, \
         f'{len(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.source][Key.file], (str, SentinelTag)), \
+    assert isinstance(profile[Key.source][Key.file], StrOrTag), \
         f'{type(profile[Key.source][Key.file]).__name__ = }' + \
         f' ¦ {name}¦{profile}'
     if isinstance(profile[Key.source][Key.file], SentinelTag):
@@ -84,7 +85,7 @@ def validate_profile_data(name: str, implementation: ObjectContextData,  # pylin
             f'{type(profile[Key.source][Key.file]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
         if profile[Key.source][Key.module] is not None:
-            assert profile[Key.source][Key.module] is implementation.module, \
+            assert profile[Key.source][Key.module] is implementation.context_data.module, \
                 f'{profile[Key.source][Key.file]} ' + \
                 f'{type(profile[Key.source][Key.module]).__name__ = }' + \
                 f' ¦ {name}¦{profile}'
@@ -95,7 +96,8 @@ def validate_profile_data(name: str, implementation: ObjectContextData,  # pylin
             f' ¦ {name}¦{profile}'
     assert isinstance(profile[Key.tags], tuple), \
         f'{type(profile[Key.tags]).__name__ = } ¦ {name}¦{profile}'
-    # assert profile[Key.tags] contains 0 or more str
+    assert all(isinstance(tag, str) for tag in profile[Key.tags]), \
+        f'Tags {profile[Key.tags] = } not all strings ¦ {name}¦{profile}'
     assert isinstance(profile[Key.details], tuple), \
         f'{type(profile[Key.details]).__name__ = } ¦ {name}¦{profile}'
     assert len(profile[Key.details]) == Key.detail_elements, \
@@ -114,60 +116,59 @@ def validate_profile_data(name: str, implementation: ObjectContextData,  # pylin
         raise ApplicationLogicError(
             f'profile details context "{profile[Key.details][Key.context]}" should be a str: ' +
             f'found {type(profile[Key.details][Key.context])}.')
-    if isinstance(profile[Key.details][Key.context], str):
-        assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE, Is.BUILTIN,
-                Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.namedtuple,
-                PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
-                PrfC.signature, PrfC.unhandled_value
-            ), f'str but {profile[Key.details][Key.context] = } ¦ {name}¦{profile}'
-        if profile[Key.details][Key.context] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
-            assert profile[Key.details][Key.detail] \
-                is SentinelTag(PrfC.expandable), 'expected expand: ' \
-                f'{type(profile[Key.details][Key.detail]).__name__}' + \
-                f' ¦ {name}¦{profile}'
-        elif profile[Key.details][Key.context] == PrfC.DATA_LEAF:
-            assert isinstance(profile[Key.details][Key.detail], (type(None), str,
-                    int, float)), \
-                f'leaf but {type(profile[Key.details][Key.detail]).__name__ = }' + \
-                f' ¦ {name}¦{profile}'
-        elif profile[Key.details][Key.context] == PrfC.signature or \
-                profile[Key.details][Key.context] == Is.ROUTINE:
-            assert isinstance(profile[Key.details][Key.detail], tuple), \
-                f'{profile[Key.details][Key.context]} but ' + \
-                f'{type(profile[Key.details][Key.detail]).__name__ = }' + \
-                f' ¦ {name}¦{profile}\nis not tuple'
-            assert len(profile[Key.details][Key.detail]) == Key.sig_elements, \
-                f'{profile[Key.details][Key.context]} but ' + \
-                f'{len(profile[Key.details][Key.detail]) = }' + \
-                f' ¦ {name}¦{profile}\nis not {Key.sig_elements}'
-            assert isinstance(profile[Key.details][Key.detail][Key.sig_parameters], tuple), \
-                f'{profile[Key.details][Key.context]} but ' + \
-                f'{type(profile[Key.details][Key.detail][Key.sig_parameters]).__name__ = }' + \
-                f' ¦ {name}¦{profile}\nis not tuple'
-            assert all(isinstance(ele, ParameterDetail)
-                       for ele in profile[Key.details][Key.detail][Key.sig_parameters]), \
-                f'{profile[Key.details][Key.context]} but ' + \
-                f'{profile[Key.details][Key.detail][Key.sig_parameters] = }' + \
-                f' ¦ {name}¦{profile}\nis not all ParameterDetail'
-        elif profile[Key.details][Key.context] == PrfC.namedtuple:
-            assert isinstance(profile[Key.details][Key.detail], str), \
-                f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
-                f' ¦ {name}¦{profile}\nis not str'
-        elif profile[Key.details][Key.context] == Is.BUILTIN:
-            assert profile[Key.details][Key.detail] is SentinelTag(ITag.BUILTIN_EXCLUDE), \
-                f'builtin but {type(profile[Key.details][Key.detail]).__name__ = }' + \
-                f' ¦ {name}¦{profile}\nis not SentinelTag({ITag.BUILTIN_EXCLUDE})'
-        elif profile[Key.details][Key.context] == Is.MODULE:
-            raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
-        # something else: app error?
-        else:
-            assert profile[Key.details][Key.context] == PrfC.DATA_NODE, \
-                f'{type(profile[Key.details][Key.context]).__name__ = } ¦' + \
-                f'{implementation.path}.{name}¦{profile}'
-            assert profile[Key.tags] == (), \
-                f'{profile[Key.tags] = } ¦{implementation.path}¦{name}¦{profile}'
-            if profile[Key.data_type] not in ('list', 'dict', 'mappingproxy'):
-                print(f'****2 {implementation.path} {name = }, {profile} ****')
+    # isinstance(profile[Key.details][Key.context], str)
+    assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE, Is.BUILTIN,
+            Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.namedtuple,
+            PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
+            PrfC.signature, PrfC.unhandled_value
+        ), f'str but {profile[Key.details][Key.context] = } ¦ {name}¦{profile}'
+    if profile[Key.details][Key.context] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
+        assert profile[Key.details][Key.detail] \
+            is SentinelTag(PrfC.expandable), 'expected expand: ' \
+            f'{type(profile[Key.details][Key.detail]).__name__}' + \
+            f' ¦ {name}¦{profile}'
+    elif profile[Key.details][Key.context] == PrfC.DATA_LEAF:
+        assert isinstance(profile[Key.details][Key.detail], LeafDataType), \
+            f'leaf but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}'
+    elif profile[Key.details][Key.context] == PrfC.signature or \
+            profile[Key.details][Key.context] == Is.ROUTINE:
+        assert isinstance(profile[Key.details][Key.detail], tuple), \
+            f'{profile[Key.details][Key.context]} but ' + \
+            f'{type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not tuple'
+        assert len(profile[Key.details][Key.detail]) == Key.sig_elements, \
+            f'{profile[Key.details][Key.context]} but ' + \
+            f'{len(profile[Key.details][Key.detail]) = }' + \
+            f' ¦ {name}¦{profile}\nis not {Key.sig_elements}'
+        assert isinstance(profile[Key.details][Key.detail][Key.sig_parameters], tuple), \
+            f'{profile[Key.details][Key.context]} but ' + \
+            f'{type(profile[Key.details][Key.detail][Key.sig_parameters]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not tuple'
+        assert all(isinstance(ele, ParameterDetail)
+                    for ele in profile[Key.details][Key.detail][Key.sig_parameters]), \
+            f'{profile[Key.details][Key.context]} but ' + \
+            f'{profile[Key.details][Key.detail][Key.sig_parameters] = }' + \
+            f' ¦ {name}¦{profile}\nis not all ParameterDetail'
+    elif profile[Key.details][Key.context] == PrfC.namedtuple:
+        assert isinstance(profile[Key.details][Key.detail], str), \
+            f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not str'
+    elif profile[Key.details][Key.context] == Is.BUILTIN:
+        assert profile[Key.details][Key.detail] is SentinelTag(ITag.BUILTIN_EXCLUDE), \
+            f'builtin but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+            f' ¦ {name}¦{profile}\nis not SentinelTag({ITag.BUILTIN_EXCLUDE})'
+    elif profile[Key.details][Key.context] == Is.MODULE:
+        raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
+    # something else: app error?
+    else:
+        assert profile[Key.details][Key.context] == PrfC.DATA_NODE, \
+            f'{type(profile[Key.details][Key.context]).__name__ = } ¦' + \
+            f'{implementation.context_data.path}.{name}¦{profile}'
+        assert profile[Key.tags] == (), \
+            f'{profile[Key.tags] = } ¦{implementation.context_data.path}¦{name}¦{profile}'
+        if profile[Key.data_type] not in ('list', 'dict', 'mappingproxy'):
+            print(f'****2 {implementation.context_data.path} {name = }, {profile} ****')
 
 def report_profile_data_exceptions(target: Callable, name: str,
                                    profile_data: AttributeProfile) -> bool:

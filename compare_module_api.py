@@ -27,13 +27,15 @@ from app_error_framework import (
     RetryLimitExceeded, ApplicationFlagError, ApplicationDataError,
 )
 from config_package import ProfileConfiguration
-from profiling_utils import validate_profile_data, annotation_str, default_str
+from profiling_utils import (
+    validate_profile_data, report_profile_data_exceptions, annotation_str, default_str
+)
 from introspection_tools import (
     AttributeProfileKey as APKey,
     InspectIs as Is,
     ProfileConstant as PrfC,
     Tag as ITag,
-    ParameterDetail,
+    ParameterDetail, MethodSignature, RoutineDetail, AttributeProfile,
     attribute_name_compare_key, split_routine_parameters
 )
 from generic_tools import (
@@ -56,13 +58,6 @@ Fields:
     base_element: object base implementation element being profiled (from full base_path)
     port_element: object port implementation element being profiled (from full port_path)
 """
-
-MethodSignature = Tuple[Tuple[ParameterDetail], StrOrTag, StrOrTag]
-RoutineDetail = Tuple[str, MethodSignature]
-AttributeDetail = Tuple[StrOrTag, Tuple]
-
-AttributeProfile = Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
-                         Tuple[AttributeDetail, StrOrTag]]
 
 @dataclass(frozen=True)
 class ContextSet:
@@ -223,13 +218,13 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                     port_key, port_profile = next(port_attribute_profile, (self.HIGH_VALUES, None))
                 elif base_key < port_key:
                     not_impl_count += 1
-                    self._handle_unmatched_attribute(match_pair, 'base',
-                        base_key[Key.compare_name], base_profile)
+                    self._handle_unmatched_attribute(base_key[Key.compare_name], match_pair,
+                                                     Key.base_implementation, base_profile)
                     base_key, base_profile = next(base_attribute_profile, (self.HIGH_VALUES, None))
                 else: # compare_base > compare_port
                     extension_count += 1
-                    self._handle_unmatched_attribute(match_pair, 'port',
-                        port_key[Key.compare_name], port_profile)
+                    self._handle_unmatched_attribute(port_key[Key.compare_name], match_pair,
+                                                     Key.port_implementation, port_profile)
                     port_key, port_profile = next(port_attribute_profile, (self.HIGH_VALUES, None))
             base_skip_count += match_pair.base.context_data.skipped
             port_skip_count += match_pair.port.context_data.skipped
@@ -303,6 +298,69 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self._check_only_routine(name, context, base_attr_details, port_attr_details)
         self._check_routine_data_structure(name, context, base_attr_details, port_attr_details)
         self._handle_matched_routine(name, context, base_attr_details, port_attr_details)
+
+    def _handle_unmatched_attribute(self, name: str, context: MatchPair, implementation: str,
+                                   profile: AttributeProfile) -> None:
+        """
+        Handles attributes that exist in only one of the base and port implementations
+
+        Args:
+            context (MatchPair): The context data for the base and port implementations.
+            implementation (str): the key to the module that implements the attribute
+            name (str): The name of the unmatched attribute.
+            profile (AttributeProfile): The profile information for the implemented attribute.
+                Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
+                         Tuple[RoutineDetail, StrOrTag]]
+        """
+        if implementation == Key.base_implementation:
+            rpt_target = self.report.not_implemented_logger
+            impl_context = context.base
+        else:
+            rpt_target = self.report.extension_logger
+            impl_context = context.port
+        validate_profile_data(name, impl_context, profile)
+        context_path = impl_context.context_data.path
+        if report_profile_data_exceptions(rpt_target.error, name, profile):
+            return
+
+        # pylint:disable=logging-fstring-interpolation
+        if profile[APKey.details][APKey.context] == Is.ROUTINE:
+            self._report_unmatched_function(name, context_path, rpt_target, profile)
+        else:
+            rpt_target.info(f'{context_path}, {name}, {profile[APKey.annotation]}, ' +
+                f'{profile[APKey.data_type]}, {profile[APKey.source]}, ' +
+                f'{profile[APKey.tags]},')
+            rpt_target.info(f'    {profile[APKey.details]}')
+
+    def _report_unmatched_function(self, name: str, context_path: Tuple[str],
+                                   rpt_target: logging.Logger, profile: AttributeProfile) -> None:
+        """
+        Reports a function(method) that exist in only one of the implementations
+
+        Args:
+            name (str): The name of the unmatched function attribute.
+            target (logging.Logger): logger instance to use for reporting function information
+            context_path (Tuple[str]): The path to the unmatched function attribute.
+            profile (AttributeProfile): The profile information for the implemented attribute.
+                Tuple[StrOrTag, str, Tuple[StrOrTag, types.ModuleType], Tuple[str, ...],
+                      Tuple[RoutineDetail, StrOrTag]]
+        """
+        sig = profile[APKey.details][APKey.detail]
+        if not (isinstance(sig, tuple) and len(sig) == APKey.sig_elements
+                and isinstance(sig[APKey.sig_parameters], tuple)):
+            rpt_target.error(f'**** {context_path} {type(sig).__name__ = } {len(sig) = } ' +
+                f'{type(sig[APKey.sig_parameters]).__name__ = } ' +
+                f'{type(sig[APKey.sig_return]).__name__ = } ****')
+            return
+        rpt_target.info(f'{context_path}, {name}, {profile[APKey.annotation]}, ' +
+            f'{profile[APKey.data_type]}, {profile[APKey.source]}, ' +
+            f'{profile[APKey.tags]}, {len(sig[APKey.sig_parameters])}')
+        for fld in sig[APKey.sig_parameters]:
+            if not isinstance(fld, ParameterDetail):
+                raise ApplicationDataError('Routine signature field is a '
+                    f'{type(fld).__name__}: expecting a ParameterDetail\n{sig = }')
+            rpt_target.info(f'    {fld}')
+        rpt_target.info(f'    {sig[APKey.sig_return]}')
 
     def _check_match_annotation(self, name: str, context: MatchPair,
                                 profile_base: Tuple, profile_port: Tuple) -> None:
@@ -935,9 +993,6 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
             self.report.matched('  Method Parameters:')
             self._shared[Key.sent_header_sig] = True
 
-    def _handle_unmatched_attribute(self, context: MatchPair, base_or_port: str, name: str,
-                                   profile: AttributeProfile) -> None:
-        pass  # Stub
     def _report_match_details(self) -> None:
         pass  # Stub
 
