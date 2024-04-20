@@ -7,7 +7,7 @@ import types
 import enum
 from typing import (Callable, Tuple, Union, Hashable, Mapping, Sequence,
     get_type_hints,
-    FrozenSet, Any,
+    FrozenSet, Dict, Any,
 )
 from collections import namedtuple
 from dataclasses import dataclass
@@ -88,6 +88,8 @@ class AttributeProfileKey:
     """method docstring"""
     sig_elements: int = 3
     """the number of elements in a signature tuple"""
+
+    match_positional: str = 'POSITIONAL'
 
 @dataclass(frozen=True)
 class Tag:
@@ -736,6 +738,29 @@ def _key_value_info(context: ObjectContextData, attr_name: str, details: list) -
     details.append((SentinelTag(Tag.NO_SOURCE), None))  # no source info for data
     details.append(())  # no "is" tags for data
     details.append(get_value_information(attribute))
+
+def split_routine_parameters(parameters: Tuple[ParameterDetail]) -> Tuple[
+        Tuple[ParameterDetail], Dict[str, ParameterDetail]]:
+    """
+    separates positional parameters from keyword-only parameters.
+
+    Args:
+        parameters (Tuple[ParameterDetail]): All parameter information for a function.
+
+    Returns
+        Tuple[Tuple[ParameterDetail], Dict[str, ParameterDetail]]: A tuple containing
+            positional parameter details and a dictionary of keyword parameter details.
+    """
+    positional = []
+    keywords = {}
+    seen_non_positional = False
+    for param in parameters:
+        if AttributeProfileKey.match_positional in param.kind and not seen_non_positional:
+            positional.append(param)
+        else:
+            seen_non_positional = True
+            keywords[param.name] = param
+    return tuple(positional), keywords
 
 def details_for_tagged_attribute(attr_name: str, attr_tags: Tuple[str], attribute: Any,
                                  details: list) -> bool:

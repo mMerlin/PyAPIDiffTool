@@ -156,7 +156,7 @@ class ProfileModule:
         raw_profile = get_attribute_info(self.context_data, name)
         if raw_profile[Idx.info_name] != name:
             LoggerMixin.get_logger().error(f'"{name}" <{self.context_data.path}> ' +
-                'get_attribute_info should return the requested attibute: Found '
+                'get_attribute_info should return the requested attribute: Found '
                 f'{repr(raw_profile[Idx.info_name])} which is not {repr(name)}')
             raise ApplicationLogicError('get_attribute_info should return the requested attribute '
                                         f'name: "{raw_profile[Idx.info_name]}" not equal "{name}"')
