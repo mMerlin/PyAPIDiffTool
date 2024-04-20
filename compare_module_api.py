@@ -198,8 +198,8 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         configuration settings.
         """
         match_pair = MatchPair(
-            base=ProfileModule(self.base_module, self.settings, self.report.skipped),
-            port=ProfileModule(self.port_module, self.settings, self.report.skipped))
+            base=ProfileModule(self.settings.base, self.settings, self.report.skipped),
+            port=ProfileModule(self.settings.port, self.settings, self.report.skipped))
         match_count, not_impl_count, extension_count = 0, 0, 0
         base_skip_count, port_skip_count = 0, 0
         processing_complete = False
@@ -994,7 +994,39 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
             self._shared[Key.sent_header_sig] = True
 
     def _report_match_details(self) -> None:
-        pass  # Stub
+        """Generate the report(s) for the module comparison"""
+        if self.settings.report_matched:
+            print(f'\nMatched in "{self.settings.base}" base and "{self.settings.port}"'
+                ' port implementations.')
+            self._report_section_details(self.report.matched_logger)
+
+        if self.settings.report_not_implemented:
+            print(f'\nNot Implemented in "{self.settings.port}" port implementation.')
+            print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
+                  'Details¦Fields')
+            self._report_section_details(self.report.not_implemented_logger)
+
+        if self.settings.report_extensions:
+            print(f'\nExtensions in the "{self.settings.port}" port implementation.')
+            print('Path, Attribute, Base Annotation, Type, Source, "is" Tags, Count, '
+                  'Details¦Fields')
+            self._report_section_details(self.report.extension_logger)
+
+        if self.settings.report_skipped:
+            print('\nSkipped attributes for '
+                f'"{self.settings.base}" (base) and "{self.settings.port}" (port)')
+            self._report_section_details(self.report.skipped_logger)
+
+    def _report_section_details(self, report_content: logging.Logger) -> None:
+        """
+        print a single report section
+
+        Args:
+            report_content (Logger): The logger use to buffer the content
+        """
+        content: ReportHandler = report_content.handlers[0]
+        for rec in content:
+            print(rec)
 
 def _initialize_exception_logging(log_file: Path = 'errors.log',
                                   *, retries: int = 3) -> logging.Logger:
