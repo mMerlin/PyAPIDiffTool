@@ -37,7 +37,7 @@ To set up the project environment and install development dependencies such as p
 pipenv install --dev
 ```
 
-To just run the application, no dependencies need to be installed (the pipenv environment does need to be initialized though). However all modules to be compared, and their dependencies, must be accessible. For many CircuitPython modules, the source can be downloaded and placed anywhere in the search path. They do not need to be installed. Some dependencies though need to actually be installed in the environment. 'pipenv install' will include the adafruit-circuitpython-typing package. Other discovered dependencies will need to be installed manually.
+To just run the application, no dependencies need to be installed (the pipenv environment does need to be initialized though). However all modules to be compared, and their dependencies, must be accessible. For many CircuitPython modules, the source can be downloaded and placed anywhere in the search path. They do not need to be installed. Some dependencies though need to actually be installed in the environment. 'pipenv install' will include the adafruit-blinka package to cover a lot of common dependencies. Other discovered dependencies will need to be installed manually.
 
 ```bash
 pipenv install «package_name»
