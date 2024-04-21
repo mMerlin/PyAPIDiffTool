@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 import types
 from typing import Callable, Iterable, Union, Tuple, Any, FrozenSet
+
 from app_error_framework import ApplicationLogicError
 from config_package import ProfileConfiguration
 from generic_tools import (
@@ -226,7 +227,6 @@ class ProfileModule:
             f'skip result expected to be tuple: Found {type(result)} {result}' # DEBUG
         self._report_skipped(f'{self.context_data.path} {result}')
         self.context_data.skipped += 1
-
 
 # Usage example:
 def main():

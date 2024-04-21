@@ -22,22 +22,22 @@ from typing import Tuple, FrozenSet, Union, Dict
 from app_error_framework import ApplicationDataError
 from config_package import ProfileConfiguration
 from profiling_utils import (
-    validate_profile_data, report_profile_data_exceptions, annotation_str, default_str
+    annotation_str, default_str, report_profile_data_exceptions, validate_profile_data
 )
 from introspection_tools import (
     AttributeProfileKey as APKey,
     InspectIs as Is,
     ProfileConstant as PrfC,
     Tag as ITag,
-    ParameterDetail, MethodSignature, RoutineDetail, AttributeProfile,
+    AttributeProfile, MethodSignature, ParameterDetail, RoutineDetail,
     attribute_name_compare_key, split_routine_parameters
 )
 from generic_tools import ReportHandler, LoggerMixin, SentinelTag, StrOrTag
 from profile_module import ProfileModule
 from compare_utils import (
-    MatchingContext,
     ContextSet, Key, MatchPair, Report,
-    initialize_exception_logging, fmt_return_annotation
+    MatchingContext,
+    adjust_module_search_path, fmt_return_annotation, initialize_exception_logging
 )
 
 class CompareModuleAPI:  # pylint:disable=too-few-public-methods
@@ -54,7 +54,8 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         report
         _logger
     """
-    APP_NAME: str = 'CompareModuleAPI'
+    APP_NAME: str = 'py_api_diff_tool'
+    APP_VERSION: str = '0.1.0'
     HIGH_VALUES = attribute_name_compare_key('_~')
     """High-value sentinel, lexicographically greater than any valid attribute name
 
@@ -70,7 +71,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self._logger = initialize_exception_logging(self.APP_NAME + ".log")
         self._logger.setLevel(logging.DEBUG)
         LoggerMixin.set_logger(self._logger)
-        self.settings = ProfileConfiguration(self.APP_NAME, self._logger.name)
+        self.settings = ProfileConfiguration(self.APP_NAME, self.APP_VERSION, self._logger.name)
         self._logger.setLevel(self.settings.logging_level)
         self.report: Report = Report()
         self._shared: Dict[str, Union[int, bool]] = {}
@@ -927,6 +928,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
             print(rec)
 
 if __name__ == "__main__":
+    adjust_module_search_path()
     app = CompareModuleAPI()
     app.process_expand_queue()
 

@@ -248,6 +248,7 @@ class ProfileConfiguration:
 
     Attributes:
         _app_name (str): Application name used to look for configuration files.
+        _app_version (str): Application version to report (command line --version).
         _logger (Logger): The Logger instance use for report exception details.
         _configuration_settings (dict): Stores the application's configuration settings
             while collecting.
@@ -293,13 +294,14 @@ class ProfileConfiguration:
     __annotation__: Dict[str, type] = field(
         default_factory=lambda: {
             '_app_name': str,
+            '_app_version': str,
             '_logger': logging.Logger,
             '_configuration_settings': Dict[str, ConfigurationType],
         },
         repr=False)
     """typehints for private attributes created with object.__setattr__"""
 
-    def __init__(self, application_name: str, logger_name: str = None):
+    def __init__(self, application_name: str, application_version: str, logger_name: str = None):
         """
         initialize ProfileConfiguration instance
 
@@ -308,6 +310,7 @@ class ProfileConfiguration:
             logger_name (str) The name of the Logger to use for reporting exception details
         """
         object.__setattr__(self, '_app_name', application_name)
+        object.__setattr__(self, '_app_version', application_version)
         object.__setattr__(self, '_logger', logging.getLogger(logger_name
             if isinstance(logger_name, str) and logger_name else 'root'))
         if not self._logger.handlers:
@@ -574,7 +577,7 @@ related to method (or function) signatures.
         """Creates parser for command-line arguments to configure the application."""
         # pylint:disable=line-too-long
         parser = argparse.ArgumentParser(description='Compare module APIs.')
-        parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
+        parser.add_argument('--version', action='version', version=f'%(prog)s {self._app_version}')
         parser.add_argument('--generate-rcfile', action=RunAndExitAction, nargs=0,
                             external_method=self._output_default_ini,
                             help='Generate a sample configuration file with default settings and exit')
@@ -845,7 +848,7 @@ def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwar
             remove_prefix=Part.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
 
 if __name__ == "__main__":
-    app = ProfileConfiguration('TestAppConfig')
+    app = ProfileConfiguration('TestAppConfig', '0.0.0')
 
 # pylint:disable=line-too-long
 # cSpell:words configparser pathlib expanduser getboolean posix getint getfloat metavar issubset docstrings dunder typehints

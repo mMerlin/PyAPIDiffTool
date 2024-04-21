@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "5a345006df194e22bbd586074c8354290a34523cee310058fea15c8aa679f168"
+            "sha256": "0f212c0919d26bac7812b462744bd02ba42afca3cb6b49ab78324fde029b5ca3"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -16,7 +16,91 @@
             }
         ]
     },
-    "default": {},
+    "default": {
+        "adafruit-blinka": {
+            "hashes": [
+                "sha256:0db0b24345e77ec3815590fc987e946e12fda9effb18f8f15f2d150a64f53618",
+                "sha256:eb4bb91f31b13dc1caedbd2b60b260e4be6f848d5381ff514d2ce924bea1b0fa"
+            ],
+            "index": "pypi",
+            "version": "==8.39.1"
+        },
+        "adafruit-circuitpython-busdevice": {
+            "hashes": [
+                "sha256:9f25577843f0a338a0936a1b57436f4451f7783b38e3cf46160b6be78faeaa44",
+                "sha256:ed06f5552e5567b0c89589c5bc6ef3adcac67d59eb505ce9127af99f33c2bc90"
+            ],
+            "version": "==5.2.6"
+        },
+        "adafruit-circuitpython-connectionmanager": {
+            "hashes": [
+                "sha256:913b325488860524edcb6a69f13575addc27c0127764cd74074476e149ba7a73",
+                "sha256:9b7800960b61896f499086a2dbf192c270a3eb1f69bf88268a1bd5422f33ad68"
+            ],
+            "version": "==1.0.1"
+        },
+        "adafruit-circuitpython-requests": {
+            "hashes": [
+                "sha256:25f789bac9f0568c289585418e52abeee7cd37c06c2fb58780aeb62022faff3e",
+                "sha256:971d7fe96b032c8f7a92ab6aaa1997e3c920171f3b935ae76b2c6b8af9c8929d"
+            ],
+            "version": "==3.2.5"
+        },
+        "adafruit-circuitpython-typing": {
+            "hashes": [
+                "sha256:4c5c1eeb3ae8a3d2dfa75129654c73690fbdb576d9069542a6ea3355467e1e74",
+                "sha256:4e23d6828deafa4dfd554fd7d3f06b8ff8e2cc554b9c7aecba9d778d45970c18"
+            ],
+            "markers": "python_version >= '3.8'",
+            "version": "==1.10.3"
+        },
+        "adafruit-platformdetect": {
+            "hashes": [
+                "sha256:2f609ba96ab23a8e26abe2ac3bc1580321c29512855cc2d65ad7d8120d120f7e",
+                "sha256:49f4099a0f2b9ab449b7d6ab89f98ebf18ff84ebab243383aa294f9a53c82430"
+            ],
+            "version": "==3.62.0"
+        },
+        "adafruit-pureio": {
+            "hashes": [
+                "sha256:281ab2099372cc0decc26326918996cbf21b8eed694ec4764d51eefa029d324e",
+                "sha256:c4cfbb365731942d1f1092a116f47dfdae0aef18c5b27f1072b5824ad5ea8c7c"
+            ],
+            "markers": "python_full_version >= '3.5.0'",
+            "version": "==1.1.11"
+        },
+        "pyftdi": {
+            "hashes": [
+                "sha256:64a804ea1c652e6935897df7867dbba18910848cad0a4927ccdb06813c072c85",
+                "sha256:cb2770b606507024a65e0a520bf892f239a36cec25cab45338ce3e3027de53c8"
+            ],
+            "markers": "python_version >= '3.8'",
+            "version": "==0.55.4"
+        },
+        "pyserial": {
+            "hashes": [
+                "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb",
+                "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
+            ],
+            "version": "==3.5"
+        },
+        "pyusb": {
+            "hashes": [
+                "sha256:2b4c7cb86dbadf044dfb9d3a4ff69fd217013dbe78a792177a3feb172449ea36",
+                "sha256:a4cc7404a203144754164b8b40994e2849fde1cfff06b08492f12fff9d9de7b9"
+            ],
+            "markers": "python_full_version >= '3.6.0'",
+            "version": "==1.2.1"
+        },
+        "typing-extensions": {
+            "hashes": [
+                "sha256:83f085bd5ca59c80295fc2a82ab5dac679cbe02b9f33f7d83af68e241bea51b0",
+                "sha256:c1f94d72897edaf4ce775bb7558d5b79d8126906a14ea5ed1635921406c0387a"
+            ],
+            "markers": "python_version >= '3.8'",
+            "version": "==4.11.0"
+        }
+    },
     "develop": {
         "appdirs": {
             "hashes": [
@@ -229,7 +313,7 @@
                 "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b",
                 "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f"
             ],
-            "markers": "python_version >= '2.6' and python_version not in '3.0, 3.1, 3.2, 3.3'",
+            "markers": "python_version >= '2.6' and python_version not in '3.0, 3.1, 3.2'",
             "version": "==0.10.2"
         },
         "tomlkit": {

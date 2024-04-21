@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import sys
 from typing import Callable, FrozenSet
 
 from app_error_framework import RetryLimitExceeded, ApplicationFlagError
@@ -204,6 +205,34 @@ def fmt_return_annotation(sig_data: tuple) -> str:
         sig_data (tuple): signature profile information for a routine
     """
     return annotation_str(sig_data[APKey.sig_return], SentinelTag(ITag.NO_RETURN_ANNOTATION))
+
+def adjust_module_search_path() -> None:
+    """
+    Add some extra folders to the python import search path, if not already there.
+
+    Avoid some issues locating modules, and dependencies, to be imported.
+    """
+    current_dir = Path.cwd()
+    app_dir = Path(__file__).parent
+    subfolder_name: str = "lib"
+    # Some common locations to find python modules to import from
+    _insert_to_path(app_dir)
+    _insert_to_path(app_dir.joinpath(subfolder_name))
+    _insert_to_path(current_dir)
+    _insert_to_path(current_dir.joinpath(subfolder_name))
+
+def _insert_to_path(path: Path) -> None:
+    """
+    Insert a folder to the start of the python module search path if it exists
+    and is not already there.
+
+    Args:
+        path (Path) the folder to add to the search list.
+    """
+    if path.exists() and path.is_dir():
+        target_dir = str(path)
+        if target_dir not in sys.path:
+            sys.path.insert(0, target_dir)
 
 # cSpell:words pathlib backslashreplace levelname DATADESCRIPTOR DUNDER
 # cSpell:ignore fstring
