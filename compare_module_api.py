@@ -14,18 +14,12 @@ This needs to run from cPython for its intended purpose. CircuitPython
 does not implement some of the required libraries (inspect).
 
 """
-from collections import namedtuple
-from dataclasses import dataclass, field
 import logging
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from queue import Queue
 import types
-from typing import Callable, Tuple, FrozenSet, Union, Dict
+from typing import Tuple, FrozenSet, Union, Dict
 
-from app_error_framework import (
-    RetryLimitExceeded, ApplicationFlagError, ApplicationDataError,
-)
+from app_error_framework import ApplicationDataError
 from config_package import ProfileConfiguration
 from profiling_utils import (
     validate_profile_data, report_profile_data_exceptions, annotation_str, default_str
@@ -38,109 +32,13 @@ from introspection_tools import (
     ParameterDetail, MethodSignature, RoutineDetail, AttributeProfile,
     attribute_name_compare_key, split_routine_parameters
 )
-from generic_tools import (
-    ReportHandler, LoggerMixin, SentinelTag,
-    generate_random_alphanumeric,
-    StrOrTag,
-)
+from generic_tools import ReportHandler, LoggerMixin, SentinelTag, StrOrTag
 from profile_module import ProfileModule
-
-MatchingContext = namedtuple(
-    'MatchingContext', ['base_path', 'port_path', 'base_element', 'port_element'])
-"""
-A context for profiling base and port implementations
-
-Fields:
-    base_path: Tuple[str] path to object, starting from comparison root (typically the module
-        (package))
-    port_path: Tuple[str] path to object, starting from comparison root (typically the module
-        (package))
-    base_element: object base implementation element being profiled (from full base_path)
-    port_element: object port implementation element being profiled (from full port_path)
-"""
-
-@dataclass(frozen=True)
-class ContextSet:
-    """
-    Constants for individual and groups of contexts to be matched
-    """
-    routine: FrozenSet[str] = frozenset({Is.ROUTINE})
-    data_node: FrozenSet[str] = frozenset({PrfC.DATA_NODE})
-    data_leaf: FrozenSet[str] = frozenset({PrfC.DATA_LEAF})
-    other_leaf: FrozenSet[str] = frozenset({PrfC.A_CLASS, PrfC.unhandled_value})
-    descriptor: FrozenSet[str] = frozenset({PrfC.A_CLASS, Is.DATADESCRIPTOR})
-    dunder: FrozenSet[str] = frozenset({PrfC.DUNDER})
-
-@dataclass(frozen=True)
-class Key:
-    """
-    Constants for lookup indexes and keys, to avoid possible typos in strings used to
-    reference them.
-    """
-    # pylint:disable=too-many-instance-attributes
-    compare_name: int = 1
-    """index to actual attribute name in (sorted) comparison key"""
-    sent_header_diff: str = 'diff header sent'
-    sent_header_sig: str = 'signature header sent'
-    parameter_index: str = 'parameter index'
-    cur_param_type: str = 'parameter type'
-    match_positional: str = 'POSITIONAL'
-    match_keyword: str = 'KEYWORD'
-    report_positional: str = 'positional'
-    report_keyword: str = 'keyword'
-    base_implementation: str = 'base'
-    port_implementation: str = 'port'
-
-@dataclass()
-class MatchPair:
-    """
-    Details about the current base and port implementation queue entries being processed.
-    """
-    base: ProfileModule
-    port: ProfileModule
-
-@dataclass()
-class Report:
-    """Access to logging for reporting
-
-    This class contains 2 linked sets of fields. <name> and <name>_logger. The
-    <name>_logger fields are custom Logger instances to buffer related report
-    content. The <name> fields are references to the .info method for the
-    associated Logger. All reporting is intended to be done at the logging.INFO
-    level.
-    The fields are all initialized at instantiation using __post_init__.
-
-    Usage:
-        report = Report()
-        report.matched_logger.setLevel(logging.INFO)
-        report.matched('test %s', 'this')
-
-        To suppress recording of specific report content:
-        report.skipped_logger.setLevel(logging.ERROR)
-    The valid arguments to matched, and the other <name> methods, is the same as
-    logging.info()
-    """
-    # pylint:disable=too-many-instance-attributes
-    matched_logger: logging.Logger = field(init=False)
-    not_implemented_logger: logging.Logger = field(init=False)
-    extension_logger: logging.Logger = field(init=False)
-    skipped_logger: logging.Logger = field(init=False)
-
-    matched: Callable[..., None] = field(init=False)
-    not_implemented: Callable[..., None] = field(init=False)
-    extension: Callable[..., None] = field(init=False)
-    skipped: Callable[..., None] = field(init=False)
-
-    def __post_init__(self):
-        """initialize reporting loggers and assign logging methods"""
-        self.matched_logger = reporting_logger('matched_')
-        self.not_implemented_logger = reporting_logger('not_implemented_')
-        self.extension_logger = reporting_logger('extension_')
-        self.skipped_logger = reporting_logger('skipped_')
-        self.matched = self.matched_logger.info
-        self.not_implemented = self.not_implemented_logger.info
-        self.extension = self.extension_logger.info
-        self.skipped = self.skipped_logger.info
+from compare_utils import (
+    MatchingContext,
+    ContextSet, Key, MatchPair, Report,
+    initialize_exception_logging, fmt_return_annotation
+)
 
 class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     """Compares module APIs for compatibility between different implementations.
@@ -169,7 +67,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
     """EOF marker for processing ParameterDetail instances"""
 
     def __init__(self):
-        self._logger = _initialize_exception_logging(self.APP_NAME + ".log")
+        self._logger = initialize_exception_logging(self.APP_NAME + ".log")
         self._logger.setLevel(logging.DEBUG)
         LoggerMixin.set_logger(self._logger)
         self.settings = ProfileConfiguration(self.APP_NAME, self._logger.name)
@@ -947,7 +845,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                 not self.settings.annotation_ignore_return:
             self._send_match_sig_header(name, context)
             self.report.matched('    routine return annotation: base '
-                f'{_fmt_return_annotation(base_sig)}; port {_fmt_return_annotation(port_sig)}')
+                f'{fmt_return_annotation(base_sig)}; port {fmt_return_annotation(port_sig)}')
 
     def _check_routine_docstring(self, name: str, context: MatchPair, base_sig: MethodSignature,
                                  port_sig: MethodSignature) -> None:
@@ -1027,90 +925,6 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         content: ReportHandler = report_content.handlers[0]
         for rec in content:
             print(rec)
-
-def _initialize_exception_logging(log_file: Path = 'errors.log',
-                                  *, retries: int = 3) -> logging.Logger:
-    """
-    gets a Logger instance to be used application wide for exception reporting
-
-    Args:
-        name(str): the name to use for the logger
-        retries (int): keyword only number of retries attempting to get unused
-            logger name
-        kwargs: optional arguments to pass to RotatingFileHandler instantiation
-    """
-
-    app_logger = get_unique_logger('exceptions_', retries=retries)
-
-    err_handler = RotatingFileHandler(log_file, encoding='utf-8', maxBytes=1024*1024,
-                                      backupCount=5, delay=True, errors='backslashreplace')
-    # '%(asctime)s %(created)f %(levelname)s %(message)s %(module)s %(funcName)s'
-    # ' %(lineno)d %(threadName)s %(thread)d'
-    err_formatter = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(lineno)d - %(message)s',
-        '%Y-%m-%d %H:%M:%S',
-        '%')
-    err_handler.setFormatter(err_formatter)
-    app_logger.addHandler(err_handler)
-    app_logger.propagate = False
-    return app_logger
-
-def reporting_logger(name_prefix: str, *, retries: int = 3) -> logging.Logger:
-    """
-    get a custom logger to use to accumulate report information.
-
-    Args:
-        name_prefix (str): human readable prefix for logger name
-        retries (int): passed to get_unique_logger
-    Returns:
-        an initialized Logger instance with custom report buffering handler
-
-    Raises
-        RetryLimitExceeded in get_unique_logger
-    """
-    # This check is more restrictive than really necessary, but is in line with
-    # the intended usage.
-    if not isinstance(name_prefix, str) and name_prefix.isidentifier:
-        raise ApplicationFlagError(f'prefix {repr(name_prefix)} expected to be a valid identifier')
-    report_handler = ReportHandler()
-    report_handler.setLevel(logging.DEBUG)
-    new_logger = get_unique_logger(name_prefix, retries=retries)
-    new_logger.addHandler(report_handler)
-    new_logger.propagate = False
-    return new_logger
-
-def get_unique_logger(name_prefix: str, *, retries: int = 3) -> logging.Logger:
-    """
-    get a logger instance that has not been configured (with a handler) yet.
-
-    Args:
-        name_prefix (str): human readable prefix for logger name
-        retries (int): keyword only number of retries attempting to get unused
-            logger name
-
-    Raises
-        RetryLimitExceeded if unable to create a Logger instance that is not
-            already being used.
-    """
-    while True:
-        logger_name = name_prefix + generate_random_alphanumeric(15)
-        new_logger = logging.getLogger(logger_name)
-        # Make sure this really is a new logger instance, not getting one previously initialized
-        if not new_logger.handlers:
-            return new_logger
-        retries -= 1
-        if retries <= 0:
-            raise RetryLimitExceeded(
-                f'new logger "{logger_name}" has {len(new_logger.handlers)} handlers: should be 0')
-
-def _fmt_return_annotation(sig_data: tuple) -> str:
-    """
-    get return type annotation from routine signature details
-
-    Args:
-        sig_data (tuple): signature profile information for a routine
-    """
-    return annotation_str(sig_data[APKey.sig_return], SentinelTag(ITag.NO_RETURN_ANNOTATION))
 
 if __name__ == "__main__":
     app = CompareModuleAPI()
