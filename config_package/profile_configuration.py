@@ -745,7 +745,7 @@ related to method (or function) signatures.
         """
         for group_name in IniKey.sections:
             for p_type in PrcKey.processing_types:
-                for entry in getattr(CfgKey, group_name + Part.joiner + p_type, []):
+                for entry in getattr(PrcKey, group_name + Part.joiner + p_type, []):
                     # default '[]' value above allows easy skipping of processing sets that
                     # do not exist
                     self._get_cli_setting(cli, p_type, entry)

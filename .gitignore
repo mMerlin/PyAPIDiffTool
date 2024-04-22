@@ -1,6 +1,6 @@
 # Project specific settings
-py_api_diff_tool.ini
-py_api_diff_tool.log
+*.ini
+*.log
 # external libraries with their own version management
 lib/adafruit_*
 # Pytest cache directory
