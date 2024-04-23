@@ -122,7 +122,7 @@ def validate_profile_data(name: str, implementation: ProfileModule,  # pylint:di
             PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
             PrfC.signature, PrfC.unhandled_value
         ), f'str but {profile[Key.details][Key.context] = } ¦ {name}¦{profile}'
-    if profile[Key.details][Key.context] in (PrfC.A_CLASS, PrfC.PKG_CLS_INST):
+    if profile[Key.details][Key.context] in (Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.PKG_CLS_INST):
         assert profile[Key.details][Key.detail] \
             is SentinelTag(PrfC.expandable), 'expected expand: ' \
             f'{type(profile[Key.details][Key.detail]).__name__}' + \

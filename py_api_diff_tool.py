@@ -190,8 +190,8 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         self._check_published_changes(name, context)
         # chain functions. First that returns true skips remainder.
         if self._check_data_node(name, context, base_attr_details) \
-                or self._check_special_leaf(name, context, base_attr_details, port_attr_details) \
                 or self._check_expandable(name, context, base_attr_details, port_attr_details) \
+                or self._check_special_leaf(name, context, base_attr_details, port_attr_details) \
                 or self._check_expand_cutoff(name, context, base_attr_details, port_attr_details):
             return
         self._check_only_routine(name, context, base_attr_details, port_attr_details)
