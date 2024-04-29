@@ -5,26 +5,48 @@
 Generic tools useful for applications
 """
 
-from types import ModuleType
-from typing import (
-    Hashable, NoReturn, Tuple, Optional, Sequence, Callable, TextIO, Union,
-    FrozenSet, Any, List, Dict, Set
-)
-import os
-import sys
-import string
-import random
 import argparse
+from collections.abc import Mapping
 import configparser
-import platform
-from pathlib import Path
 from dataclasses import dataclass
-from threading import Lock
+import importlib
 import inspect
 import logging
-import importlib
+import os
+from pathlib import Path
+import platform
+import random
+import sys
+import string
+from threading import Lock
+from types import ModuleType
+from typing import (
+    Callable, Hashable, NoReturn, Optional, Iterable, TextIO, Tuple, TypedDict, TypeVar, Union,
+    cast,
+    Any, Dict, FrozenSet, List, Set,
+)
+try:
+    from logging import _ArgsType  # pylint:disable=no-name-in-module
+    # pylance sees type in IDE, but import fails at runtime
+except ImportError:
+    # Create a custom type alias based on the internal _ArgsType from logging module
+    _ArgsType = Mapping[Any, Any]
+# _ArgsType = Tuple[Any, ...]
+# _ArgsType = Union[Tuple[Any], Tuple[Any, Any], Tuple[Any, Any, Any], Tuple[Any, Any, Any, Any]]
 
-IniStructureType = Dict[str, Dict[str, Union[str, Dict[str, str]]]]
+class IniSetting(TypedDict):
+    """valid settings entries"""
+    doc: str
+    default: str
+    comment: Optional[str]
+class IniSection(TypedDict):
+    """valid section entries"""
+    description: str
+    settings: Dict[str, IniSetting]
+IniStructureType = Dict[str, IniSection]
+T = TypeVar('T')
+ReadOnlySet = Union[Set[T], FrozenSet[T]]
+"""A set that is to be used (read) but not modified"""
 
 class LoggerMixin:
     """
@@ -92,7 +114,6 @@ class ListHandler(logging.Handler):
             record (LogRecord) the standard logging.LogRecord
         """
         self.log_records.append(record)
-        return True
 
     def log_also_to_me(self, logger: logging.Logger) -> bool:
         """
@@ -104,7 +125,8 @@ class ListHandler(logging.Handler):
         Returns (bool) True if this ListHandler was added to the Logger instance, False if
             it was already there.
         """
-        for existing_handler in logger._handlers:  # pylint:disable=protected-access
+        # in adafruit_logging, the attribute is _handlers
+        for existing_handler in logger.handlers:  # pylint:disable=protected-access
             if existing_handler is self:
                 return False  # already there
         logger.addHandler(self)
@@ -118,11 +140,13 @@ class ListHandler(logging.Handler):
             logger (logging.Logger) a Logger instance to fully redirect to this ListHandler
         """
         # pylint:disable=protected-access
-        while logger._handlers:
-            logger.removeHandler(logger._handlers[0])
+        # in adafruit_logging, the attribute is _handlers
+        while logger.handlers:
+            logger.removeHandler(logger.handlers[0])
         logger.addHandler(self)
 
-    def to_tuple(self) -> Tuple[Tuple[str, str, int, str, tuple]]:
+    def to_tuple(self) -> Tuple[Tuple[str, str, int, Union[str, Any],
+                                      Optional[_ArgsType]], ...]:  # type: ignore
         """
         log record data, without timestamp, as a tuple that can be directly compared
         for unittest verification.
@@ -273,7 +297,7 @@ class SentinelTag:
         Returns:
             The hashable tag associated with this sentinel instance.
         """
-        return self._tag  # pylint:disable=no-member
+        return self._tag  # type: ignore pylint:disable=no-member
 
     def __repr__(self) -> str:
         """
@@ -282,7 +306,7 @@ class SentinelTag:
         Returns:
             A string representation indicating it's a sentinel tag followed by the tag value.
         """
-        return f"Sentinel Tag: {repr(self._tag)}"  # pylint:disable=no-member
+        return f"Sentinel Tag: {repr(self._tag)}"  # type: ignore pylint:disable=no-member
 
     def __hash__(self) -> int:
         """
@@ -291,7 +315,7 @@ class SentinelTag:
         Returns:
             The hash of the _tag attribute.
         """
-        return hash(self._tag)  # pylint:disable=no-member
+        return hash(self._tag)  # type: ignore pylint:disable=no-member
 
     def __eq__(self, other: object) -> bool:
         """
@@ -340,9 +364,10 @@ class TriStateAction(argparse.Action):
         super().__init__(option_strings, dest, **kwargs)
 
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
-                 values: Optional[List[str]], option_string: str = None):
+                 values: Optional[List[str]], option_string: Optional[str] = None):
         # Set True or False based on whether the option string starts with the negation prefix.
-        setattr(namespace, self.dest, not option_string.startswith(self.negation_prefix))
+        setattr(namespace, self.dest,
+                option_string is None or not option_string.startswith(self.negation_prefix))
 
 class RunAndExitAction(argparse.Action):
     """Custom action to execute a method and then exit the program.
@@ -365,12 +390,12 @@ class RunAndExitAction(argparse.Action):
         external_method (Callable[..., Any]): Stores the method to execute.
     """
     def __init__(self, option_strings: List[str], dest: str,
-                 external_method: Callable[..., Any] = None, **kwargs):
+                 external_method: Optional[Callable[..., Any]] = None, **kwargs):
         super().__init__(option_strings, dest, **kwargs)
         self.external_method = external_method
 
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
-                 values: Optional[List[str]], option_string: str = None) -> NoReturn:
+                 values: Optional[List[str]], option_string: Optional[str] = None) -> NoReturn:
         if self.external_method:
             try:
                 self.external_method()
@@ -378,10 +403,10 @@ class RunAndExitAction(argparse.Action):
                 parser.error(f'Error executing {self.external_method.__name__}: {e}')
         sys.exit()
 
-def process_keyword_settings(value: str, valid_values: FrozenSet[str], *,  # pylint:disable=too-many-arguments
+def process_keyword_settings(value: str, valid_values: ReadOnlySet[str], *,  # pylint:disable=too-many-arguments
                              remove_prefix: str = 'no-',
-                             file_path: Path = None,
-                             source_entry: str = None,
+                             file_path: Optional[Path] = None,
+                             source_entry: Optional[str] = None,
                              raise_exception: bool = False) -> Dict[str, bool]:
     """
     Processes a comma-separated list of keywords, maintaining order and allowing for negations.
@@ -573,7 +598,7 @@ def add_tri_state_argument(parser: argparse.ArgumentParser, argument_name: str,
     parser.add_argument(negated_arg_name, dest=dest_name, action=TriStateAction,
                         negation_marker=negation, nargs=0, help=argparse.SUPPRESS)
 
-def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-') -> \
+def make_all_or_keys_validator(choices: Iterable[str], *, negation: str = 'no-') -> \
         Callable[[str], Dict[str, bool]]:
     """
     Creates a factory function to validate a command-line argument that accepts either 'all',
@@ -583,8 +608,7 @@ def make_all_or_keys_validator(choices: Sequence[str], *, negation: str = 'no-')
     user, handling repetitions and negations (removals) accordingly.
 
     Args:
-        choices (Sequence[str]): A list of valid keywords excluding 'all' and their negated
-            versions.
+        choices (Iterable[str]): Valid keywords excluding 'all' and their negated versions.
         negation (str): The prefix indicating negation of a keyword. Defaults to 'no-'.
 
     Returns:
@@ -704,7 +728,7 @@ def is_attr_name(name: str) -> bool:
     return (
         isinstance(name, str) and
         name.isidentifier() and
-        not inspect.iskeyword(name)
+        not inspect.iskeyword(name)  # type: ignore
     )
 
 def generate_random_alphanumeric(length: int = 10) -> str:
@@ -840,7 +864,7 @@ def generate_ini_file(output: TextIO, structure: IniStructureType):
     c_pfx = '; '
     for section, content in structure.items():
         # use insert_prefix to add comment prefix to all comment context, to handle all cases
-        # where the comment text include newline characters.
+        # where the comment text includes newline characters.
 
         # Write section description as a comment
         output.write(f"{insert_prefix(content['description'], c_pfx)}\n")
@@ -848,7 +872,7 @@ def generate_ini_file(output: TextIO, structure: IniStructureType):
         for setting, info in content['settings'].items():
             # Write each setting's documentation and default value (commented out)
             output.write(f"{insert_prefix(info['doc'], c_pfx)}\n")
-            optional_comment = insert_prefix(info.get('comment', ''), f' {c_pfx}')
+            optional_comment = insert_prefix(cast(str, info.get('comment', '')), f' {c_pfx}')
             output.write(f"; {setting} = {info['default']}{optional_comment}\n\n")
 
         # Extra newline for readability between sections
@@ -857,6 +881,6 @@ def generate_ini_file(output: TextIO, structure: IniStructureType):
 # Alternatively, writing to stderr
 # generate_ini_file(sys.stderr, structure)
 
-# cSpell:words levelname iskeyword expanduser pathlib issubset configparser
+# cSpell:words levelname iskeyword expanduser pathlib issubset configparser adafruit
 # cSpell:ignore msecs nargs appdata noalpha, nogamma
 # cSpell:allowCompoundWords true

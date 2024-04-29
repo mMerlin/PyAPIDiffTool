@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 import logging
 import types
-from typing import Callable, Iterable, Union, Tuple, Any, FrozenSet
+from typing import Callable, Iterable, Union, Tuple, FrozenSet
 
 from app_error_framework import ApplicationLogicError
 from config_package import ProfileConfiguration
@@ -48,7 +48,7 @@ class Tag:
 class ProfileModule:
     """Manage introspection and api profiling for a single module"""
     def __init__(self, module_path: str, configuration: ProfileConfiguration,
-                skip_reporter: Callable[[str, Any], None]):
+                skip_reporter: Callable[..., None]):
         """
         Initialize the ProfileModule.
 
@@ -65,7 +65,7 @@ class ProfileModule:
         self._attr_names = frozenset()
         self._ignorable_attributes = frozenset()
         self._report_skipped = skip_reporter
-        self._dont_filter_source_patterns: FrozenSet = None
+        self._dont_filter_source_patterns: FrozenSet = frozenset()
 
     def update_context(self, path: Tuple[str], element: object) -> None:
         """
@@ -93,7 +93,7 @@ class ProfileModule:
         for name in sorted(attr_names, key=attribute_name_compare_key):
             attribute_profile = self._profile_attribute(name)
             if attribute_profile is not SentinelTag(Tag.dont_yield):
-                yield attribute_profile
+                yield attribute_profile  # type: ignore
 
     def _initialize_iteration_context(self) -> None:
         """
@@ -232,10 +232,11 @@ class ProfileModule:
 def main():
     """wrapper so pylint does not think variables should be constants"""
     test_app = "test"
+    test_ver = "0.0.1"
     test_logger = LoggerMixin.get_logger() # "profile_module"
     test_logger.addHandler(logging.StreamHandler())
-    settings = ProfileConfiguration(test_app, test_logger.name)
-    profile = ProfileModule('logging', settings, test_logger)
+    settings = ProfileConfiguration(test_app, test_ver, test_logger.name)
+    profile = ProfileModule('logging', settings, test_logger.info)
     attr_profile = profile.profile_attributes(False)
     print(next(attr_profile))
 

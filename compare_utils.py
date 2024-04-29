@@ -12,7 +12,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
-from typing import Callable, FrozenSet
+from typing import Callable, Union, FrozenSet
 
 from app_error_framework import RetryLimitExceeded, ApplicationFlagError
 from profiling_utils import annotation_str
@@ -44,7 +44,7 @@ class ContextSet:
     """
     Constants for individual and groups of contexts to be matched
     """
-    routine: FrozenSet[str] = frozenset({Is.ROUTINE})
+    routine: FrozenSet[str] = frozenset({Is.ROUTINE, PrfC.signature})
     data_node: FrozenSet[str] = frozenset({PrfC.DATA_NODE})
     data_leaf: FrozenSet[str] = frozenset({PrfC.DATA_LEAF})
     other_leaf: FrozenSet[str] = frozenset({PrfC.A_CLASS, PrfC.unhandled_value})
@@ -122,7 +122,7 @@ class Report:
         self.extension = self.extension_logger.info
         self.skipped = self.skipped_logger.info
 
-def initialize_exception_logging(log_file: Path = 'errors.log',
+def initialize_exception_logging(log_file: Union[Path, str] = 'errors.log',
                                   *, retries: int = 3) -> logging.Logger:
     """
     gets a Logger instance to be used application wide for exception reporting
@@ -234,6 +234,6 @@ def _insert_to_path(path: Path) -> None:
         if target_dir not in sys.path:
             sys.path.insert(0, target_dir)
 
-# cSpell:words pathlib backslashreplace levelname DATADESCRIPTOR DUNDER
+# cSpell:words pathlib backslashreplace levelname DATADESCRIPTOR DUNDER joinpath
 # cSpell:ignore fstring
 # cSpell:allowCompoundWords true

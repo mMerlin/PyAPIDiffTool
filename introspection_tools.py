@@ -5,8 +5,8 @@
 
 import types
 import enum
-from typing import (Callable, Tuple, Union, Hashable, Mapping, Sequence,
-    get_type_hints,
+from typing import (Callable, Hashable, Mapping, Optional, Sequence, Tuple, Union,
+    cast, get_type_hints,
     FrozenSet, Dict, Any,
 )
 from collections import namedtuple
@@ -39,7 +39,7 @@ AttributeProfile = Tuple[StrOrTag,
     (profile details)
 """
 
-GLOBAL_IS_FUNCTIONS: Tuple[Tuple[str, Callable[[Any], bool]]] = tuple(
+GLOBAL_IS_FUNCTIONS: Tuple[Tuple[str, Callable[[Any], bool]], ...] = tuple(
     (name[2:], func)
     for name, func in sorted(inspect.__dict__.items())
     if name.startswith('is') and callable(func)
@@ -215,46 +215,46 @@ class TagSets:
 @dataclass(frozen=True)
 class TypeSets:  # pylint:disable=too-many-instance-attributes
     """Constant holding groups of data types that (in some context) need to be processed together"""
-    with_hints: Tuple[type] = (type, types.MethodType, types.FunctionType, types.ModuleType)
-    with_source: Tuple[type] = (types.ModuleType, type, types.MethodType, types.FunctionType,
+    with_hints: Tuple[type, ...] = (type, types.MethodType, types.FunctionType, types.ModuleType)
+    with_source: Tuple[type, ...] = (types.ModuleType, type, types.MethodType, types.FunctionType,
                             types.TracebackType, types.FrameType, types.CodeType)
-    module: Tuple[type] = (types.ModuleType,)
-    nestable: Tuple[type] = (list, tuple, set)
-    dictionary: Tuple[type] = (dict, types.MappingProxyType)
-    function: Tuple[type] = (types.FunctionType,)
-    simple: Tuple[type] = (type(None), bool, int, float, complex, enum.Enum, decimal.Decimal,
+    module: Tuple[type, ...] = (types.ModuleType,)
+    nestable: Tuple[type, ...] = (list, tuple, set)
+    dictionary: Tuple[type, ...] = (dict, types.MappingProxyType)
+    function: Tuple[type, ...] = (types.FunctionType,)
+    simple: Tuple[type, ...] = (type(None), bool, int, float, complex, enum.Enum, decimal.Decimal,
                     fractions.Fraction, str, bytes, bytearray)
     # nested_types = (list, tuple, set)
-    complex: Tuple[type] = (list, tuple, dict, set, Mapping, Sequence, types.MappingProxyType)
+    complex: Tuple[type, ...] = (list, tuple, dict, set, Mapping, Sequence, types.MappingProxyType)
 
 @dataclass
 class ObjectContextData:  # pylint:disable=too-many-instance-attributes
     """
     Data class to hold object context (attribute name) information.
     """
-    path: Tuple[str]
+    path: Tuple[str, ...]
     """path to object, normally starting at the root module"""
     element: object
     """the actual object"""
-    source: str = None
+    source: Optional[str] = None
     """the source file for the object (definition)"""
     mode: str = ProfileConstant.GENERIC_MODE
     """hint for how to profile attributes for the current context"""
-    module: types.ModuleType = None
+    module: Optional[types.ModuleType] = None
     """the module that element is (or is contained in)"""
-    typehints: dict = None
+    typehints: Optional[dict] = None
     """get_type_hints(element) if isinstance(element, (type, types.MethodType, types.FunctionType,
            types.ModuleType)) else {}"""
     # attribute names
-    all: Tuple[str] = None
+    all: Optional[Tuple[str, ...]] = None
     """tuple(dir(obj))"""
-    published: Tuple[str] = None
+    published: Tuple[Union[str, int, Tuple[int, str]], ...] = None  # type: ignore
     """
     tuple(getattr(element, '__all__', []))
     tuple(getattr(element, '_fields, []))
     tuple(element.keys()))
     """
-    public: Tuple[str] = None
+    public: Optional[Tuple[str, ...]] = None
     """tuple(attr for attr in all if public_attr_name(attr))"""
     skipped: int = 0
 
@@ -306,7 +306,7 @@ def populate_object_context(context: ObjectContextData) -> None:
     context.published = tuple(getattr(ele, '__all__', []))
     context.public = tuple(attr for attr in context.all if is_public_attr_name(attr))
     if isinstance(ele, TypeSets.module):
-        context.module = ele
+        context.module = ele  # type: ignore
         context.mode = ProfileConstant.MODULE_MODE
     else:
         context.module = inspect.getmodule(ele)
@@ -318,7 +318,7 @@ def populate_object_context(context: ObjectContextData) -> None:
             context.published = tuple(range(len(ele)))
         elif isinstance(ele, TypeSets.dictionary):
             context.mode = ProfileConstant.KEY_VALUE_MODE
-            context.published = tuple((i, key) for i, key in enumerate(ele.keys()))
+            context.published = tuple((i, key) for i, key in enumerate(ele.keys()))  # type: ignore
         elif repr(type(ele)).startswith('<class '):
             # Class definition or instance
             context.mode = ProfileConstant.CLASS_MODE
@@ -352,7 +352,7 @@ def get_object_source_file(element: object) -> Union[str, SentinelTag]:
     """
     if isinstance(element, TypeSets.with_source):
         try:
-            return inspect.getsourcefile(element)
+            return inspect.getsourcefile(element)  # type: ignore
         except TypeError as exc:
             sentinel = _handle_specific_type_error(exc)
             if sentinel is not None:
@@ -386,7 +386,7 @@ def _handle_specific_type_error(exc: TypeError) -> Union[SentinelTag, None]:
         return SentinelTag(Tag.GET_SOURCE_FAILURE)
     return None
 
-def get_attribute_source(attribute: Any) -> Tuple[StrOrTag, types.ModuleType]:
+def get_attribute_source(attribute: Any) -> Tuple[StrOrTag, Optional[types.ModuleType]]:
     """
     Get information about the source context for the attribute.
 
@@ -462,7 +462,7 @@ def attribute_name_compare_key(attribute_name: Union[str, Tuple[int, str]]) -> T
         generated_key = 0  #public
     return generated_key, attribute_name
 
-def _verify_is_tags(tags: Tuple[str]) -> None:
+def _verify_is_tags(tags: Tuple[str, ...]) -> None:
     """
     Do sanity check on the "is" function tags this code currently understands how to process
 
@@ -505,7 +505,7 @@ def _wrap_test(routine: Callable, obj: Any) -> bool:
         pass
     return False
 
-def get_tag_set(obj: Any) -> Tuple[str]:
+def get_tag_set(obj: Any) -> Tuple[str, ...]:
     """
     Find out what (everything that) obj 'is' recognized as by inspect
 
@@ -615,7 +615,8 @@ def get_annotation_info(source: Any, missing_tag: Hashable) -> Union[str, Sentin
         else source.__name__ if hasattr(source, '__name__') \
         else repr(source)
 
-def get_signature(routine: Callable) -> Tuple[Tuple[ParameterDetail], Union[str, SentinelTag]]:
+def get_signature(routine: Callable) -> Tuple[Optional[Tuple[ParameterDetail, ...]],
+                                              Union[str, SentinelTag], StrOrTag]:
     """
     Collect function signature details.
 
@@ -642,7 +643,7 @@ def get_signature(routine: Callable) -> Tuple[Tuple[ParameterDetail], Union[str,
         signature = inspect.signature(routine)
     except ValueError:
         # Some callables may not support introspection of their signature
-        return (None, SentinelTag(Tag.WARNING_NON_INSPECTABLE))
+        return None, SentinelTag(Tag.WARNING_NON_INSPECTABLE), SentinelTag(Tag.NO_DOCSTRING)
 
     signature_fields = []
     for name, param in signature.parameters.items():
@@ -685,7 +686,7 @@ def details_without_tags(my_object: Any, attr_name: str, attribute: Any, details
     else:
         details.append(get_value_information(attribute))
 
-def get_module_info(attribute: types.ModuleType) -> Tuple[str]:
+def get_module_info(attribute: types.ModuleType) -> Tuple[str, ...]:
     """
     get extra information for a module attribute
 
@@ -695,7 +696,7 @@ def get_module_info(attribute: types.ModuleType) -> Tuple[str]:
     return InspectIs.MODULE, getattr(attribute, '__package__', '«pkg»'), \
         getattr(attribute, '__path__', '«pth»')
 
-def _namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
+def _namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str, ...]]:
     """
     namedtuple as a tuple of its fields
 
@@ -707,8 +708,8 @@ def _namedtuple_fields(attribute: type) -> Tuple[str, Tuple[str]]:
     """
     # pylint:disable=protected-access
     if not (isinstance(attribute, type) and issubclass(attribute, tuple) and
-            hasattr(attribute, '_fields') and isinstance(attribute._fields, tuple) and
-            all(isinstance(ele, str) for ele in attribute._fields)):
+            hasattr(attribute, '_fields') and isinstance(attribute._fields, tuple) and # type: ignore # pylint: disable=line-too-long
+            all(isinstance(ele, str) for ele in attribute._fields)): # type: ignore
         raise IntrospectionNotNamedtuple(f'Not a namedtuple: {type(attribute)}')
     return ProfileConstant.namedtuple, repr(attribute._fields)
 
@@ -736,7 +737,8 @@ def _key_value_info(context: ObjectContextData, attr_name: str, details: list) -
     attribute = context.element[attr_name]
     if isinstance(attribute, types.FunctionType):
         details.append(get_annotation_info(  # __dict__ includes methods
-            context.typehints.get(attr_name, inspect.Parameter.empty), Tag.NO_ATTRIBUTE_ANNOTATION))
+            cast(dict, context.typehints).get(attr_name, inspect.Parameter.empty),
+            Tag.NO_ATTRIBUTE_ANNOTATION))
     else:
         details.append(SentinelTag(Tag.NO_DATA_ANNOTATION))
     details.append(type(attribute).__name__)
@@ -767,7 +769,7 @@ def split_routine_parameters(parameters: Tuple[ParameterDetail]) -> Tuple[
             keywords[param.name] = param
     return tuple(positional), keywords
 
-def details_for_tagged_attribute(attr_name: str, attr_tags: Tuple[str], attribute: Any,
+def details_for_tagged_attribute(attr_name: str, attr_tags: Tuple[str, ...], attribute: Any,
                                  details: list) -> bool:
     """
     Collect details when an attribute is true for at least one of the inspect "is" functions
@@ -892,7 +894,7 @@ def get_attribute_info(context: ObjectContextData, attr_name: str) -> Tuple[str,
 if __name__ == '__main__':
     ctx=ObjectContextData(path=(logging.__name__,), element=logging)
     populate_object_context(ctx)
-    print(get_attribute_info(ctx, ctx.public[-1]))
+    print(get_attribute_info(ctx, cast(tuple, ctx.public)[-1]))
 
 # pylint:disable=line-too-long
 # cSpell:words dunder, typehints, getsourcefile, getset, inspectable subelements

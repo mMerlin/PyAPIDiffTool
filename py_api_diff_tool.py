@@ -55,7 +55,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         _logger
     """
     APP_NAME: str = 'py_api_diff_tool'
-    APP_VERSION: str = '0.1.0'
+    APP_VERSION: str = '0.1.1'
     HIGH_VALUES = attribute_name_compare_key('_~')
     """High-value sentinel, lexicographically greater than any valid attribute name
 
@@ -63,7 +63,6 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     With the sort order used, private attribute names sort last
     """
-    # END_DETAIL = ParameterDetail(name='z', kind='KEYWORD', annotation='str', default=None)
     END_DETAIL = ParameterDetail(name='z', kind='undefined', annotation='str', default=None)
     """EOF marker for processing ParameterDetail instances"""
 
@@ -328,7 +327,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     def _check_category_discrepancy(self, name: str, context: MatchPair,
             base_attr_details: Tuple[StrOrTag, tuple],
-            port_attr_details: Tuple[StrOrTag, tuple]) -> None:
+            port_attr_details: Tuple[StrOrTag, tuple]) -> bool:
         """
         Reports unexpected structure conditions for category information.
 
@@ -358,7 +357,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     def _check_different_category_key(self, name: str, context: MatchPair,
             base_attr_details: Tuple[StrOrTag, tuple],
-            port_attr_details: Tuple[StrOrTag, tuple]) -> None:
+            port_attr_details: Tuple[StrOrTag, tuple]) -> bool:
         """
         Reports different category identifier for base and port implementations.
 
@@ -382,7 +381,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
 
     def _check_data_leaf(self, name: str, context: MatchPair,
             base_attr_details: Tuple[StrOrTag, tuple],
-            port_attr_details: Tuple[StrOrTag, tuple]) -> None:
+            port_attr_details: Tuple[StrOrTag, tuple]) -> bool:
         """
         Report differences data leaf (literal) values.
 
@@ -523,7 +522,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         """
         if base_attr_details[APKey.detail] is SentinelTag(PrfC.expandable):
             if port_attr_details[APKey.detail] is not SentinelTag(PrfC.expandable):
-                self._logger(f'"{name}" ' +
+                self._logger.error(f'"{name}" ' +
                     f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
                     f'category {base_attr_details[APKey.context]}, ' +
                     f'base is {repr(base_attr_details[APKey.detail])}, ' +
@@ -532,7 +531,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                     f'"{name}" base {base_attr_details[APKey.context]} is expandable, but ' +
                     f'port is {repr(port_attr_details[APKey.detail])}')
             if base_attr_details[APKey.context] not in ContextSet.descriptor:
-                self._logger(f'"{name}" ' +
+                self._logger.error(f'"{name}" ' +
                     f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
                     f' category {base_attr_details[APKey.context]} ' +
                     f'not in {repr(set(ContextSet.descriptor))}')
@@ -564,7 +563,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
         """
         if base_attr_details[APKey.detail] is SentinelTag(PrfC.cutoff):
             if port_attr_details[APKey.detail] is not SentinelTag(PrfC.cutoff):
-                self._logger(f'"{name}" ' +
+                self._logger.error(f'"{name}" ' +
                     f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
                     f' category {base_attr_details[APKey.context]} with base detail ' +
                     f'{repr(base_attr_details[APKey.detail])} but port detail' +
@@ -573,7 +572,7 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                     f'"{name}" is cutoff for {context.base.context_data.path} ' +
                     f'but not for {context.port.context_data.path}')
             if base_attr_details[APKey.context] not in ContextSet.dunder:
-                self._logger(f'"{name}" ' +
+                self._logger.error(f'"{name}" ' +
                     f'<{context.base.context_data.path}¦{context.port.context_data.path}> ' +
                     f' category {base_attr_details[APKey.context]} is not in ' +
                     f'{repr(set(ContextSet.dunder))} for {repr(base_attr_details[APKey.detail])}')
@@ -653,14 +652,14 @@ class CompareModuleAPI:  # pylint:disable=too-few-public-methods
                 f'{type(port_attr_details[APKey.detail]).__name__} instead of tuple,tuple')
         if not (len(base_attr_details[APKey.detail]) == APKey.sig_elements and
                 len(port_attr_details[APKey.detail]) == APKey.sig_elements):
-            self._logger(
+            self._logger.error(
                 f'"{name}" <{context.base.context_data.path}¦{context.port.context_data.path}> ' +
                 'routine category detail items counts are (' +
                 f'{len(base_attr_details[APKey.detail])},' +
                 f'{len(port_attr_details[APKey.detail])}), ' +
                 f'not {APKey.sig_elements},{APKey.sig_elements}),')
-            self._logger(f'  Base details: {base_attr_details[APKey.detail]}')
-            self._logger(f'  Port details: {port_attr_details[APKey.detail]}')
+            self._logger.error(f'  Base details: {base_attr_details[APKey.detail]}')  # pylint:disable=logging-fstring-interpolation
+            self._logger.error(f'  Port details: {port_attr_details[APKey.detail]}')  # pylint:disable=logging-fstring-interpolation
             raise ApplicationDataError(
                 f'"{name}" {base_attr_details[APKey.context]} detail tuples contain ' +
                 f'{len(base_attr_details[APKey.detail])},{len(port_attr_details[APKey.detail])} ' +

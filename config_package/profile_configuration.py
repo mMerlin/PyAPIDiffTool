@@ -13,18 +13,18 @@ import argparse
 from collections import namedtuple
 import configparser
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 import logging
 from pathlib import Path
 import sys
-from typing import Union, Dict, Any, FrozenSet, Set
+from typing import Optional, Union, cast, Any, Dict, FrozenSet, Set
 
 from generic_tools import (
-    SentinelTag, RunAndExitAction, IniStr, IniStructureType,
+    SentinelTag, RunAndExitAction, IniStr, StrOrTag,
     add_tri_state_argument, validate_module_path, make_all_or_keys_validator,
     attribute_names_validator, get_config_path, get_config_file, update_set_keywords_from_string,
-    update_set_keywords_from_dict, validate_attribute_names, generate_ini_file
+    update_set_keywords_from_dict, validate_attribute_names, generate_ini_file,
 )
 
 ConfigurationType = Union[bool, str, set, Dict[str, Any]]
@@ -82,6 +82,8 @@ class Part:
     '''The prefix to use to reverse the sense of boolean cli arguments'''
     remove_prefix: str = 'no-'
     '''The prefix to use to undo or remove a keyword element from a set'''
+    comment_marker: str = ';'
+    '''The character to use to mark comments in ini file'''
 
 @dataclass(frozen=True)
 class PrcKey:
@@ -291,17 +293,9 @@ class ProfileConfiguration:
     """output report of attributes that exist in port but not in base implementation"""
     report_skipped: bool
     """output report of attributes that were skipped in port or base implementation"""
-    __annotation__: Dict[str, type] = field(
-        default_factory=lambda: {
-            '_app_name': str,
-            '_app_version': str,
-            '_logger': logging.Logger,
-            '_configuration_settings': Dict[str, ConfigurationType],
-        },
-        repr=False)
-    """typehints for private attributes created with object.__setattr__"""
 
-    def __init__(self, application_name: str, application_version: str, logger_name: str = None):
+    def __init__(self, application_name: str, application_version: str,
+                 logger_name: Optional[str] = None):
         """
         initialize ProfileConfiguration instance
 
@@ -309,6 +303,10 @@ class ProfileConfiguration:
             application_name (str) The name of the application the configuration is for
             logger_name (str) The name of the Logger to use for reporting exception details
         """
+        self.__annotations__['_app_name'] = str
+        self.__annotations__['_app_version'] = str
+        self.__annotations__['_logger'] = logging.Logger
+        self.__annotations__['_configuration_settings'] = Dict[str, ConfigurationType]
         object.__setattr__(self, '_app_name', application_name)
         object.__setattr__(self, '_app_version', application_version)
         object.__setattr__(self, '_logger', logging.getLogger(logger_name
@@ -324,23 +322,23 @@ class ProfileConfiguration:
         self.__dict__[CfgFld.logging_level] = \
             self._configuration_settings[Setting.LOGGING_LEVEL.name]
         self.__dict__[CfgFld.skip_attributes_global] = frozenset(
-            self._configuration_settings[Setting.IGNORE_GLOBAL_ATTRIBUTES.name])
+            _set_only(self._configuration_settings[Setting.IGNORE_GLOBAL_ATTRIBUTES.name]))
         self.__dict__[CfgFld.skip_attributes_module] = frozenset(
-            self._configuration_settings[Setting.IGNORE_MODULE_ATTRIBUTES.name])
+            _set_only(self._configuration_settings[Setting.IGNORE_MODULE_ATTRIBUTES.name]))
         self.__dict__[CfgFld.skip_attributes_class] = frozenset(
-            self._configuration_settings[Setting.IGNORE_CLASS_ATTRIBUTES.name])
+            _set_only(self._configuration_settings[Setting.IGNORE_CLASS_ATTRIBUTES.name]))
         self.__dict__[CfgFld.docstring_ignore_module] = SetKey.module in \
-            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_DOCSTRING.name])
         self.__dict__[CfgFld.docstring_ignore_class] = SetKey.class_key in \
-            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_DOCSTRING.name])
         self.__dict__[CfgFld.docstring_ignore_method] = SetKey.method in \
-            self._configuration_settings[Setting.IGNORE_DOCSTRING.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_DOCSTRING.name])
         self.__dict__[CfgFld.annotation_ignore_scope] = SetKey.scope in \
-            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name])
         self.__dict__[CfgFld.annotation_ignore_parameter] = SetKey.parameter in \
-            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name])
         self.__dict__[CfgFld.annotation_ignore_return] = SetKey.return_key in \
-            self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name]
+            _set_only(self._configuration_settings[Setting.IGNORE_ADDED_ANNOTATION.name])
         # self.__dict__[CfgFld.use_builtin] = self._configuration_settings[Setting.USE_BUILTIN.name]
         self.__dict__[CfgFld.report_matched] = \
             self._configuration_settings[Setting.REPORT_MATCHED.name]
@@ -365,6 +363,18 @@ class ProfileConfiguration:
         # All validation for the source information for boolean fields is done as
         # self._configuration_settings is populated.
         self._configuration_settings.clear()
+        # object.__delattr__(self, '_«name») works, but makes debugging harder. Displaying
+        # the instance shows
+        # <config_package.profile_configuration.ProfileConfiguration object at 0x7f89b62984d0>
+        # instead of ProfileConfiguration(«field»=«value»,…)
+        # IDEA, recommended by gpt someplace, use a 'normal' frozen data class with separate
+        # command line and config file processing. The final result from that is used to
+        # populated the frozen data class instance, instead of doing it internally.
+        # self.settings: ProfileConfiguration = ProcessConfiguration.settings()
+        del self.__annotations__['_app_name']
+        del self.__annotations__['_app_version']
+        del self.__annotations__['_logger']
+        del self.__annotations__['_configuration_settings']
 
     def _get_configuration_settings(self) -> argparse.Namespace:
         """
@@ -375,10 +385,10 @@ class ProfileConfiguration:
             (argparse.Namespace) containing the command line argument information
         """
         object.__setattr__(self, '_configuration_settings', self._default_configuration())
-        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
+        self._logger.setLevel(_str_only(self._configuration_settings[Setting.LOGGING_LEVEL.name]))
         cmd_line_parser: argparse.ArgumentParser = self._create_command_line_parser()
         cli_args: argparse.Namespace = cmd_line_parser.parse_args()
-        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
+        self._logger.setLevel(_str_only(self._configuration_settings[Setting.LOGGING_LEVEL.name]))
         self._process_configuration_files(cli_args)
         self._apply_command_line_arguments_to_configuration(cli_args)
         self._apply_settings_to_configuration()
@@ -405,10 +415,10 @@ class ProfileConfiguration:
             # The builtin exclusions have not been suppressed
             attribute_exclusions = self._builtin_attribute_name_exclusions()
             for key, value in attribute_exclusions.items():
-                target: set = self._configuration_settings[key]
+                target: Set[str] = cast(set, self._configuration_settings[key])
                 target.update(value)
 
-    def _default_configuration(self) -> ConfigurationType:
+    def _default_configuration(self) -> Dict[str, ConfigurationType]:
         """The builtin base (default) configuration settings"""
         def_cfg: Dict[str, ConfigurationType] = {
             CfgKey.scope.settings: "all",
@@ -434,7 +444,7 @@ class ProfileConfiguration:
         """
         # pylint:disable=line-too-long
         def_reference = self._default_configuration()
-        ini_details: IniStructureType = {
+        ini_details: dict = {  # :IniStructureType
             IniKey.main: {
                 IniStr.description: '''Documented CompareModuleAPI configuration template file
 
@@ -444,9 +454,9 @@ and default values.
 Multiple configuration files can be used. Each file modifies the state of the
 configuration left by the previous file. The first configuration file read, if it
 exists, will be from the operating system specific user application configuration
-folder. On linux, this will be ~/.config/CompareModuleAPI/CompareModuleAPI.ini
-On Windows, it will be %APPDATA%/CompareModuleAPI/CompareModuleAPI.ini
-On Mac, it will be library/Application Support/CompareModuleAPI/CompareModuleAPI.ini
+folder. On linux, this will be ~/.config/py_api_diff_tool/py_api_diff_tool.ini
+On Windows, it will be %APPDATA%/py_api_diff_tool/py_api_diff_tool.ini
+On Mac, it will be library/Application Support/py_api_diff_tool/py_api_diff_tool.ini
 The user configuration file is not required for operation. Neither the folder
 or user configuration file are automatically created.
 
@@ -464,7 +474,7 @@ files are loaded in the order the options are specified.
 
 Main section''',
                 IniStr.settings: {
-                    CfgKey.scope.settings: {
+                    CfgKey.scope.ini: {
                         IniStr.doc: '''Set the scope of the attribute comparisons between the base and port package
 implementations. 'all' is all attribute names that can be seen with dir().
 'published' limits the comparison to attribute names that are in the 'all'
@@ -480,7 +490,7 @@ reverse case will be reported as an extension in the port implementation.''',
                         IniStr.default: def_reference[CfgKey.scope.settings],
                         IniStr.comment: 'choose one of: all, public, published'
                     },
-                    CfgKey.loglevel.settings: {
+                    CfgKey.loglevel.ini: {
                         IniStr.doc: '''Set the minimum severity level for messages to include in the application
 log file.''',
                         IniStr.default: def_reference[CfgKey.loglevel.settings],
@@ -492,33 +502,30 @@ log file.''',
                 IniStr.description: '''Report configuration section controls what parts of the comparison result are
 included in the final report.''',
                 IniStr.settings: {
-                    CfgKey.exact.settings: {
+                    CfgKey.exact.ini: {
                         IniStr.doc: '''Include attribute names with exactly matching signatures in the match
-differences report.''',
+differences report. boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.exact.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
-                    CfgKey.matched.settings: {
+                    CfgKey.matched.ini: {
                         IniStr.doc: '''Include report section for attributes with matching names but differing
-signatures.''',
+signatures. boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.matched.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
-                    CfgKey.not_imp.settings: {
-                        IniStr.doc: "Include report section for attributes not implemented in the port module.",
+                    CfgKey.not_imp.ini: {
+                        IniStr.doc: '''Include report section for attributes not implemented in the port module.
+boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.not_imp.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
-                    CfgKey.extensions.settings: {
+                    CfgKey.extensions.ini: {
                         IniStr.doc: '''Include report section for attributes implemented in the port
-implementation but not in the base.''',
+implementation but not in the base. boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.extensions.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
-                    CfgKey.skipped.settings: {
-                        IniStr.doc: "Include report section for attribute names that were skipped during the comparison.",
+                    CfgKey.skipped.ini: {
+                        IniStr.doc: '''Include report section for attribute names that were skipped during the comparison.
+boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.skipped.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
                 }
             },
@@ -531,41 +538,40 @@ contexts. To disable a context (possibly previously enable by a different
 configuration file), prefix the context with '{Part.remove_prefix}'. The general format is:
 all or [{Part.remove_prefix}]<context1>[,[{Part.remove_prefix}]<context2>]...''',
                 IniStr.settings: {
-                    CfgKey.builtin.settings: {
+                    CfgKey.builtin.ini: {
                         IniStr.doc: '''Include the application builtin attribute names in the context specific
-exclusions (common across many modules).''',
+exclusions (common across many modules). boolean: True or False''',
                         IniStr.default: str(def_reference[CfgKey.builtin.settings]),
-                        IniStr.comment: "boolean: True or False"
                     },
-                    CfgKey.global_attr.settings: {
+                    CfgKey.global_attr.ini: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore in all contexts.",
-                        IniStr.default: ','.join(def_reference[CfgKey.global_attr.settings]),
+                        IniStr.default: ','.join(_set_only(def_reference[CfgKey.global_attr.settings])),
                         IniStr.comment: "list of attribute names"
                     },
-                    CfgKey.module_attr.settings: {
+                    CfgKey.module_attr.ini: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore when processing an module.",
-                        IniStr.default: ','.join(def_reference[CfgKey.module_attr.settings]),
+                        IniStr.default: ','.join(_set_only(def_reference[CfgKey.module_attr.settings])),
                         IniStr.comment: "list of attribute names"
                     },
-                    CfgKey.class_attr.settings: {
+                    CfgKey.class_attr.ini: {
                         IniStr.doc: "Comma-separated list of attribute names to ignore when processing a class.",
-                        IniStr.default: ','.join(def_reference[CfgKey.class_attr.settings]),
+                        IniStr.default: ','.join(_set_only(def_reference[CfgKey.class_attr.settings])),
                         IniStr.comment: "list of attribute names"
                     },
-                    CfgKey.docstring.settings: {
+                    CfgKey.docstring.ini: {
                         IniStr.doc: ''''all' or a comma-separated list of contexts to ignore differences in docstring
 values.''',
-                        IniStr.default: ','.join(def_reference[CfgKey.docstring.settings]),
+                        IniStr.default: ','.join(_set_only(def_reference[CfgKey.docstring.settings])),
                         IniStr.comment: "contexts: module, class, method"
                     },
-                    CfgKey.annotation.settings: {
+                    CfgKey.annotation.ini: {
                         IniStr.doc: ''''all' or a comma-separated list of contexts to ignore annotations that exist
 in the port implementation where none was defined for base. These are all
 related to method (or function) signatures.
 - method parameter typehint
 - method return value typehint
 - scope is for any entry in the parent class __annotation__ dictionary''',
-                        IniStr.default: ','.join(def_reference[CfgKey.annotation.settings]),
+                        IniStr.default: ','.join(_set_only(def_reference[CfgKey.annotation.settings])),
                         IniStr.comment: "contexts: parameter, return, scope"
                     },
                 }
@@ -686,7 +692,7 @@ related to method (or function) signatures.
             CfgKey for values and usage of the referenced entries.
             output_default_ini for information about ini entries.
         """
-        config: configparser.ConfigParser = get_config_file(file_path)
+        config: Optional[configparser.ConfigParser] = get_config_file(file_path)
         if config is None:
             return False
 
@@ -702,7 +708,7 @@ related to method (or function) signatures.
                     # do not exist
                     self._process_config_case(config_section, p_type, entry, file_path)
 
-        self._logger.setLevel(self._configuration_settings[Setting.LOGGING_LEVEL.name])
+        self._logger.setLevel(_str_only(self._configuration_settings[Setting.LOGGING_LEVEL.name]))
         self._logger.info('settings loaded from "%s"', file_path)
         return True
 
@@ -719,16 +725,23 @@ related to method (or function) signatures.
             file_path (Path): The path to the configuration file being processed, used for logging.
         """
         entry_keys: SettingKeys = getattr(CfgKey, entry)
-        ini_value: str = section.get(entry_keys.ini, fallback=SentinelTag(Tag.no_entry))
+        get_value: str = section.get(entry_keys.ini,
+                                     fallback=SentinelTag(Tag.no_entry))  # type: ignore
+        ini_value: str = _remove_ini_comment(get_value)
         if not (ini_value and ini_value is not SentinelTag(Tag.no_entry)):
             return
 
         if processing == Part.option_type:
             self._update_option_from_string(ini_value, entry, file_path=file_path)
         elif processing == Part.bool_type:
+            if Part.comment_marker in get_value:
+                raise ValueError(
+                    f'comment marker "{Part.comment_marker}" not allowed after boolean ' +
+                    f'value in ini file. Found for "{entry_keys.ini}" in {file_path}')
             self._configuration_settings[entry_keys.settings] = section.getboolean(entry_keys.ini)
         else:  # processing == Part.set_type
-            _update_set_from_string(ini_value, self._configuration_settings[entry_keys.settings],
+            _update_set_from_string(ini_value,
+                                    cast(set, self._configuration_settings[entry_keys.settings]),
                                     entry, file_path=file_path)
 
     def _apply_command_line_arguments_to_configuration(self, cli: argparse.Namespace) -> None:
@@ -768,16 +781,16 @@ related to method (or function) signatures.
             assert isinstance(cli_value, str), \
                 f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
                 'argument: expecting str'
-            self._configuration_settings[entry_keys.settings] = cli_value
+            self._configuration_settings[entry_keys.settings] = cli_value  # type: ignore
         elif processing == Part.bool_type:
             assert isinstance(cli_value, bool), \
                 f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
                 'argument: expecting bool'
-            self._configuration_settings[entry_keys.settings] = cli_value
+            self._configuration_settings[entry_keys.settings] = cli_value  # type: ignore
         else:  # processing == Part.set_type
-            good_set: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.context,
-                                                SentinelTag(Tag.no_entry))
-            target: set = self._configuration_settings[entry_keys.settings]
+            good_set: Union[FrozenSet[str], SentinelTag] = getattr(
+                CfgKey, entry + Part.joiner + Part.context, SentinelTag(Tag.no_entry))
+            target: set = self._configuration_settings[entry_keys.settings]  # type: ignore
             if good_set is SentinelTag(Tag.no_entry):
                 assert isinstance(cli_value, set), \
                     f'found {type(cli_value).__name__} for CLI {entry_keys.cli} ' \
@@ -797,7 +810,7 @@ related to method (or function) signatures.
 
         returns (str) the path to the users' application configuration file
         """
-        return get_config_path(self._app_name) / f'{self._app_name}.ini'
+        return get_config_path(self._app_name) / f'{self._app_name}.ini'  # type: ignore
 
     def _project_config_path(self) -> Path:
         """
@@ -805,7 +818,7 @@ related to method (or function) signatures.
 
         returns (str) the path to the project application configuration file
         """
-        return Path.cwd() / f'{self._app_name}.ini'
+        return Path.cwd() / f'{self._app_name}.ini'  # type: ignore
 
     def _update_option_from_string(self, ini_value: str, entry: str, file_path: Path) -> None:
         """
@@ -820,9 +833,9 @@ related to method (or function) signatures.
         keys_source: SettingKeys = getattr(CfgKey, entry)
         allowed_options: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.choice)
         if ini_value in allowed_options:
-            self._configuration_settings[keys_source.settings] = ini_value
+            self._configuration_settings[keys_source.settings] = ini_value  # type: ignore
         else:
-            self._logger.error(
+            self._logger.error(  # type: ignore
                 'Invalid %s value "%s" found in "%s". Valid values are: %s',
                 keys_source.ini, ini_value, file_path, ', '.join(allowed_options))
 
@@ -838,14 +851,63 @@ def _update_set_from_string(ini_value: str, target: Set[str], entry: str, **kwar
                 specifically source_entry and file_path for process_keyword_settings
     """
     # get the base keywords allowed for 'entry' (if it is a keywords attribute)
-    good_set: FrozenSet[str] = getattr(CfgKey, entry + Part.joiner + Part.context,
-                                        SentinelTag(Tag.no_entry))
+    good_set: Union[FrozenSet[str], SentinelTag] = getattr(
+        CfgKey, entry + Part.joiner + Part.context, SentinelTag(Tag.no_entry))
     if good_set is SentinelTag(Tag.no_entry):
         # no keyword validation set: everything else is attribute names
         target.update(validate_attribute_names(ini_value))
     else:
+        assert isinstance(good_set, FrozenSet)  # so pylance sees that it is not a sentinel
         update_set_keywords_from_string(target, ini_value, good_set,
             remove_prefix=Part.remove_prefix, source_entry=getattr(CfgKey, entry).ini, **kwargs)
+
+def _remove_ini_comment(value: StrOrTag) -> StrOrTag:
+    """
+    remove the comment from an ini value
+
+    Args:
+        value (str): the value to be checked
+
+    Returns:
+        StrOrTag: the value passed in without any trailing comment
+    """
+    if not isinstance(value, str):
+        return value
+    return value.split(Part.comment_marker)[0].strip()
+
+def _set_only(value: ConfigurationType) -> set:
+    """
+    make sure that a ConfigurationType is a set in the callers context
+
+    Args:
+        value (ConfigurationType): the value to be checked
+
+    Returns:
+        set: the value passed in
+
+    Raises:
+        TypeError: if the value is not a set
+    """
+    if not isinstance(value, set):
+        raise TypeError(f'expected set, found {type(value).__name__}')
+    return value
+
+def _str_only(value: ConfigurationType) -> str:
+    """
+    make sure that a ConfigurationType is a str in the callers context
+
+    Args:
+        value (ConfigurationType): the value to be checked
+
+    Returns:
+        str: the value passed in
+
+    Raises:
+        TypeError: if the value is not a str
+    """
+    if not isinstance(value, str):
+        raise TypeError(f'expected str, found {type(value).__name__}')
+    return value
 
 if __name__ == "__main__":
     app = ProfileConfiguration('TestAppConfig', '0.0.0')

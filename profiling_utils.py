@@ -10,7 +10,7 @@ API information
 
 """
 
-from typing import Hashable, Callable
+from typing import Hashable, Callable, cast
 
 from generic_tools import SentinelTag, LoggerMixin, StrOrTag
 from introspection_tools import (
@@ -75,98 +75,101 @@ def validate_profile_data(name: str, implementation: ProfileModule,  # pylint:di
         f'{type(profile[Key.data_type]).__name__ = } ¦ {name}¦{profile}'
     assert isinstance(profile[Key.source], tuple), \
         f'{type(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
-    assert len(profile[Key.source]) == Key.source_elements, \
-        f'{len(profile[Key.source]).__name__ = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.source][Key.file], StrOrTag), \
-        f'{type(profile[Key.source][Key.file]).__name__ = }' + \
+    prof_key_src = cast(tuple, profile[Key.source])
+    assert len(prof_key_src) == Key.source_elements, \
+        f'{len(prof_key_src) = } ¦ {name}¦{profile}'
+    assert isinstance(prof_key_src[Key.file], StrOrTag), \
+        f'{type(prof_key_src[Key.file]).__name__ = }' + \
         f' ¦ {name}¦{profile}'
-    if isinstance(profile[Key.source][Key.file], SentinelTag):
-        assert profile[Key.source][Key.file] is SentinelTag(ITag.NO_SOURCE), \
-            f'{type(profile[Key.source][Key.file]).__name__ = }' + \
+    if isinstance(prof_key_src[Key.file], SentinelTag):
+        assert prof_key_src[Key.file] is SentinelTag(ITag.NO_SOURCE), \
+            f'{type(prof_key_src[Key.file]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
-        if profile[Key.source][Key.module] is not None:
-            assert profile[Key.source][Key.module] is implementation.context_data.module, \
-                f'{profile[Key.source][Key.file]} ' + \
-                f'{type(profile[Key.source][Key.module]).__name__ = }' + \
+        if prof_key_src[Key.module] is not None:
+            assert prof_key_src[Key.module] is implementation.context_data.module, \
+                f'{prof_key_src[Key.file]} ' + \
+                f'{type(prof_key_src[Key.module]).__name__ = }' + \
                 f' ¦ {name}¦{profile}'
     else:
-        assert profile[Key.source][Key.module] is not None, \
-            f'{profile[Key.source][Key.file]} ' + \
-            f'{type(profile[Key.source][Key.module]).__name__ = }' + \
+        assert prof_key_src[Key.module] is not None, \
+            f'{prof_key_src[Key.file]} ' + \
+            f'{type(prof_key_src[Key.module]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
     assert isinstance(profile[Key.tags], tuple), \
         f'{type(profile[Key.tags]).__name__ = } ¦ {name}¦{profile}'
-    assert all(isinstance(tag, str) for tag in profile[Key.tags]), \
-        f'Tags {profile[Key.tags] = } not all strings ¦ {name}¦{profile}'
+    prof_key_tags = cast(tuple, profile[Key.tags])
+    assert all(isinstance(tag, str) for tag in prof_key_tags), \
+        f'Tags {prof_key_tags = } not all strings ¦ {name}¦{profile}'
     assert isinstance(profile[Key.details], tuple), \
         f'{type(profile[Key.details]).__name__ = } ¦ {name}¦{profile}'
-    assert len(profile[Key.details]) == Key.detail_elements, \
-        f'{len(profile[Key.details]) = } ¦ {name}¦{profile}'
-    assert isinstance(profile[Key.details][Key.context], StrOrTag), \
-        f'{type(profile[Key.details][Key.context]).__name__ = }' + \
-        f' ¦ {name}¦{profile[Key.details]}'
-    if isinstance(profile[Key.details][Key.context], SentinelTag):
+    prof_key_details = cast(tuple, profile[Key.details])
+    assert len(prof_key_details) == Key.detail_elements, \
+        f'{len(prof_key_details) = } ¦ {name}¦{profile}'
+    assert isinstance(prof_key_details[Key.context], StrOrTag), \
+        f'{type(prof_key_details[Key.context]).__name__ = }' + \
+        f' ¦ {name}¦{prof_key_details}'
+    if isinstance(prof_key_details[Key.context], SentinelTag):
         LoggerMixin.get_logger().error('incomplete refactoring. Found '
-            f'{profile[Key.details][Key.context]} being used as the context key for profile ' +
-            f'details.\n{name}¦{profile[Key.details]}')
+            f'{prof_key_details[Key.context]} being used as the context key for profile ' +
+            f'details.\n{name}¦{prof_key_details}')
         raise ApplicationLogicError(
-            f'incomplete refactoring: found {profile[Key.details][Key.context]} used for profile '
+            f'incomplete refactoring: found {prof_key_details[Key.context]} used for profile '
             'details context. Continue the refactoring')
-    if not isinstance(profile[Key.details][Key.context], str):
+    if not isinstance(prof_key_details[Key.context], str):
         raise ApplicationLogicError(
-            f'profile details context "{profile[Key.details][Key.context]}" should be a str: ' +
-            f'found {type(profile[Key.details][Key.context])}.')
-    # isinstance(profile[Key.details][Key.context], str)
-    assert profile[Key.details][Key.context] in (Is.ROUTINE, Is.MODULE, Is.BUILTIN,
+            f'profile details context "{prof_key_details[Key.context]}" should be a str: ' +
+            f'found {type(prof_key_details[Key.context])}.')
+    # isinstance(prof_key_details[Key.context], str)
+    assert prof_key_details[Key.context] in (Is.ROUTINE, Is.MODULE, Is.BUILTIN,
             Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.namedtuple,
             PrfC.PKG_CLS_INST, PrfC.DUNDER, PrfC.DATA_LEAF, PrfC.DATA_NODE,
             PrfC.signature, PrfC.unhandled_value
-        ), f'str but {profile[Key.details][Key.context] = } ¦ {name}¦{profile}'
-    if profile[Key.details][Key.context] in (Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.PKG_CLS_INST):
-        assert profile[Key.details][Key.detail] \
+        ), f'str but {prof_key_details[Key.context] = } ¦ {name}¦{profile}'
+    if prof_key_details[Key.context] in (Is.DATADESCRIPTOR, PrfC.A_CLASS, PrfC.PKG_CLS_INST):
+        assert prof_key_details[Key.detail] \
             is SentinelTag(PrfC.expandable), 'expected expand: ' \
-            f'{type(profile[Key.details][Key.detail]).__name__}' + \
+            f'{type(prof_key_details[Key.detail]).__name__}' + \
             f' ¦ {name}¦{profile}'
-    elif profile[Key.details][Key.context] == PrfC.DATA_LEAF:
-        assert isinstance(profile[Key.details][Key.detail], LeafDataType), \
-            f'leaf but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+    elif prof_key_details[Key.context] == PrfC.DATA_LEAF:
+        assert isinstance(prof_key_details[Key.detail], LeafDataType), \
+            f'leaf but {type(prof_key_details[Key.detail]).__name__ = }' + \
             f' ¦ {name}¦{profile}'
-    elif profile[Key.details][Key.context] == PrfC.signature or \
-            profile[Key.details][Key.context] == Is.ROUTINE:
-        assert isinstance(profile[Key.details][Key.detail], tuple), \
-            f'{profile[Key.details][Key.context]} but ' + \
-            f'{type(profile[Key.details][Key.detail]).__name__ = }' + \
+    elif prof_key_details[Key.context] == PrfC.signature or \
+            prof_key_details[Key.context] == Is.ROUTINE:
+        assert isinstance(prof_key_details[Key.detail], tuple), \
+            f'{prof_key_details[Key.context]} but ' + \
+            f'{type(prof_key_details[Key.detail]).__name__ = }' + \
             f' ¦ {name}¦{profile}\nis not tuple'
-        assert len(profile[Key.details][Key.detail]) == Key.sig_elements, \
-            f'{profile[Key.details][Key.context]} but ' + \
-            f'{len(profile[Key.details][Key.detail]) = }' + \
+        assert len(prof_key_details[Key.detail]) == Key.sig_elements, \
+            f'{prof_key_details[Key.context]} but ' + \
+            f'{len(prof_key_details[Key.detail]) = }' + \
             f' ¦ {name}¦{profile}\nis not {Key.sig_elements}'
-        assert isinstance(profile[Key.details][Key.detail][Key.sig_parameters], tuple), \
-            f'{profile[Key.details][Key.context]} but ' + \
-            f'{type(profile[Key.details][Key.detail][Key.sig_parameters]).__name__ = }' + \
+        assert isinstance(prof_key_details[Key.detail][Key.sig_parameters], tuple), \
+            f'{prof_key_details[Key.context]} but ' + \
+            f'{type(prof_key_details[Key.detail][Key.sig_parameters]).__name__ = }' + \
             f' ¦ {name}¦{profile}\nis not tuple'
         assert all(isinstance(ele, ParameterDetail)
-                    for ele in profile[Key.details][Key.detail][Key.sig_parameters]), \
-            f'{profile[Key.details][Key.context]} but ' + \
-            f'{profile[Key.details][Key.detail][Key.sig_parameters] = }' + \
+                    for ele in prof_key_details[Key.detail][Key.sig_parameters]), \
+            f'{prof_key_details[Key.context]} but ' + \
+            f'{prof_key_details[Key.detail][Key.sig_parameters] = }' + \
             f' ¦ {name}¦{profile}\nis not all ParameterDetail'
-    elif profile[Key.details][Key.context] == PrfC.namedtuple:
-        assert isinstance(profile[Key.details][Key.detail], str), \
-            f'namedtuple but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+    elif prof_key_details[Key.context] == PrfC.namedtuple:
+        assert isinstance(prof_key_details[Key.detail], str), \
+            f'namedtuple but {type(prof_key_details[Key.detail]).__name__ = }' + \
             f' ¦ {name}¦{profile}\nis not str'
-    elif profile[Key.details][Key.context] == Is.BUILTIN:
-        assert profile[Key.details][Key.detail] is SentinelTag(ITag.BUILTIN_EXCLUDE), \
-            f'builtin but {type(profile[Key.details][Key.detail]).__name__ = }' + \
+    elif prof_key_details[Key.context] == Is.BUILTIN:
+        assert prof_key_details[Key.detail] is SentinelTag(ITag.BUILTIN_EXCLUDE), \
+            f'builtin but {type(prof_key_details[Key.detail]).__name__ = }' + \
             f' ¦ {name}¦{profile}\nis not SentinelTag({ITag.BUILTIN_EXCLUDE})'
-    elif profile[Key.details][Key.context] == Is.MODULE:
+    elif prof_key_details[Key.context] == Is.MODULE:
         raise ValueError(('"%s" module detected, should filter?: %s', name, str(profile)))
     # something else: app error?
     else:
-        assert profile[Key.details][Key.context] == PrfC.DATA_NODE, \
-            f'{type(profile[Key.details][Key.context]).__name__ = } ¦' + \
+        assert prof_key_details[Key.context] == PrfC.DATA_NODE, \
+            f'{type(prof_key_details[Key.context]).__name__ = } ¦' + \
             f'{implementation.context_data.path}.{name}¦{profile}'
-        assert profile[Key.tags] == (), \
-            f'{profile[Key.tags] = } ¦{implementation.context_data.path}¦{name}¦{profile}'
+        assert prof_key_tags == (), \
+            f'{prof_key_tags = } ¦{implementation.context_data.path}¦{name}¦{profile}'
         if profile[Key.data_type] not in ('list', 'dict', 'mappingproxy'):
             print(f'****2 {implementation.context_data.path} {name = }, {profile} ****')
 
@@ -194,9 +197,9 @@ def report_profile_data_exceptions(target: Callable, name: str,
             f'**** {type(profile_data[Key.details]).__name__ =} ¦ {name}¦{profile_data} '
             '****')
         return True
-    if len(profile_data[Key.details]) != Key.detail_elements:
+    if len(cast(tuple, profile_data[Key.details])) != Key.detail_elements:
         target(
-            f'**** {len(profile_data[Key.details]) =} ¦ {name}¦{profile_data} ****')
+            f'**** {len(cast(tuple, profile_data[Key.details])) =} ¦ {name}¦{profile_data} ****')
         return True
     return False
 
